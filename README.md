@@ -36,8 +36,11 @@ VPN-клиент для Windows и Linux поверх [sing-box](https://github.
 «Подобрать стратегию» по очереди проверяет все и выбирает рабочую.
 
 - Windows: запускается `winws.exe` из сборки.
-- Linux: вместо него `nfqws` (скачивается вместе со сборкой), нужны `nftables` и `pkexec`;
-  при включении система спросит пароль.
+- Linux: вместо него `nfqws` (скачивается вместе со сборкой); при включении система спросит пароль.
+  Нужны `nftables` и `pkexec` — в Ubuntu обычно уже стоят, если нет:
+
+      sudo apt install nftables pkexec        # Ubuntu 22.04+, Debian 12+ (в старых — policykit-1)
+      sudo dnf install nftables polkit        # Fedora
 - Discord ловится по программе: обычный клиент, PTB/Canary, Vesktop, Equibop, Legcord.
   Discord в браузере — сайты идут через zapret, голос через VPN.
 

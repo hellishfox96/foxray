@@ -31,8 +31,13 @@ Foxray — VPN-клиент (VLESS Reality, Hysteria2) поверх sing-box
   показывает уже открытое окно.
 - Zapret (Discord с голосом и YouTube без VPN): «Настройки» → «Zapret» → «Скачать»,
   потом «Подобрать стратегию». Zapret работает от root — при включении система
-  спросит пароль (один раз за запуск Foxray). Нужен пакет nftables:
-     Ubuntu/Debian: sudo apt install nftables
+  спросит пароль (один раз за запуск Foxray). Нужны пакеты nftables и pkexec
+  (в Ubuntu обычно уже стоят), если нет:
+     Ubuntu 22.04+/Debian 12+: sudo apt install nftables pkexec
+     Ubuntu 20.04/Debian 11:   sudo apt install nftables policykit-1
+     Fedora:                   sudo dnf install nftables polkit
+- Обновление: «Настройки» → «Обновление» → «Обновить». Foxray скачает новую
+  версию и перезапустится; серверы и настройки останутся.
 - Все данные (серверы, настройки) хранятся в этой же папке.
   Чтобы перенести Foxray на другой ПК — просто скопируй папку.
 
