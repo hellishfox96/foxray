@@ -13,6 +13,38 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Путь к Foxray, запомненный при запуске. В Linux `current_exe()` после переименования файла
+/// (обновление делает foxray → foxray.old) показывает уже новое имя — и обновление «второй раз»
+/// заменяло бы и запускало foxray.old (отсюда foxray.old.old и старая версия после перезапуска).
+static APP_EXE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Вызвать в самом начале main.
+pub fn remember_exe() {
+    if let Ok(p) = std::env::current_exe() {
+        let _ = APP_EXE.set(strip_old(&p));
+    }
+}
+
+/// «…/foxray.old.old» → «…/foxray» (и « (deleted)», которое Linux дописывает к удалённому файлу).
+fn strip_old(p: &Path) -> PathBuf {
+    let mut s = p.to_string_lossy().to_string();
+    if let Some(x) = s.strip_suffix(" (deleted)") {
+        s = x.to_string();
+    }
+    while let Some(x) = s.strip_suffix(".old") {
+        s = x.to_string();
+    }
+    PathBuf::from(s)
+}
+
+/// Где лежит Foxray (тот файл, который заменяем и запускаем).
+fn app_exe() -> Result<PathBuf, String> {
+    match APP_EXE.get() {
+        Some(p) => Ok(p.clone()),
+        None => std::env::current_exe().map(|p| strip_old(&p)).map_err(|e| e.to_string()),
+    }
+}
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// «владелец/репозиторий» из Cargo.toml. None — репозиторий не указан.
@@ -183,7 +215,7 @@ pub fn install(rel: &Release) -> Result<(), String> {
         .take(200 * 1024 * 1024)
         .read_to_end(&mut data)
         .map_err(|e| format!("не скачалось: {e}"))?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = app_exe()?;
     let files = extract(&data, &wanted(&exe))?;
     if !files.iter().any(|(dst, _)| *dst == exe) {
         return Err("в архиве нет самого Foxray".into());
@@ -258,20 +290,24 @@ fn old_path(p: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// При запуске: удалить *.old, оставшиеся после обновления.
+/// При запуске: удалить *.old (и *.old.old…), оставшиеся после обновления.
 pub fn cleanup_old() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = app_exe() else { return };
     for (_, p) in wanted(&exe) {
-        let old = old_path(&p);
-        if old.exists() {
-            let _ = std::fs::remove_file(old);
+        let (Some(dir), Some(name)) = (p.parent(), p.file_name().map(|n| n.to_string_lossy().to_string())) else { continue };
+        let prefix = format!("{name}.old");
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with(&prefix) && n[name.len()..].split('.').skip(1).all(|x| x == "old") {
+                let _ = std::fs::remove_file(e.path());
+            }
         }
     }
 }
 
 /// Запустить новую версию (она дождётся, пока эта закроется).
 pub fn restart() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = app_exe()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--after-update");
     crate::sys::hide_window(&mut cmd);
@@ -299,6 +335,13 @@ mod tests {
         assert_eq!(release_notes("**Full Changelog**: https://github.com/x/y/commits/v0.6.0"), Vec::<String>::new());
         assert_eq!(release_notes("Первый выпуск"), vec!["Первый выпуск"]);
         assert_eq!(iso_date("2026-11-15T10:20:00Z"), "15.11.2026");
+    }
+
+    #[test]
+    fn old_suffix() {
+        assert_eq!(strip_old(Path::new("/a/foxray.old.old")), PathBuf::from("/a/foxray"));
+        assert_eq!(strip_old(Path::new("/a/foxray.old (deleted)")), PathBuf::from("/a/foxray"));
+        assert_eq!(strip_old(Path::new("C:/a/Foxray.exe")), PathBuf::from("C:/a/Foxray.exe"));
     }
 
     #[test]

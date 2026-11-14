@@ -94,6 +94,8 @@ fn with_app<R>(f: impl FnOnce(&mut App) -> R) -> R {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Запомнить путь к себе до любых переименований (обновление).
+    foxray::update::remember_exe();
     // Linux: помощник zapret с правами root (запускается самим Foxray через pkexec).
     #[cfg(target_os = "linux")]
     if std::env::args().nth(1).as_deref() == Some("--zapret-helper") {

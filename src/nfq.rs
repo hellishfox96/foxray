@@ -27,7 +27,12 @@ const TUN: &str = "foxray";
 pub fn plan(win_args: &[String]) -> Result<(Vec<String>, String, String), String> {
     let mut tcp = String::new();
     let mut udp = String::new();
-    let mut out = Vec::with_capacity(win_args.len() + 2);
+    let mut out = Vec::with_capacity(win_args.len() + 4);
+    // Сгенерированные nfqws пакеты (фейки, части) уходят с того же интерфейса, что и исходный.
+    // Без этого при включённом VPN их подхватывает маршрутизация TUN (sing-box, auto_route) —
+    // они уходят в туннель вместо Wi-Fi, и не открывается ничего («Ресурс временно недоступен»).
+    out.push("--bind-fix4".to_string());
+    out.push("--bind-fix6".to_string());
     for a in win_args {
         if let Some(p) = a.strip_prefix("--wf-tcp=") {
             tcp = p.to_string();
@@ -452,7 +457,7 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         let (args, tcp, udp) = plan(&a).unwrap();
-        assert_eq!(args, vec!["--filter-udp=443", "--new"]);
+        assert_eq!(args, vec!["--bind-fix4", "--bind-fix6", "--filter-udp=443", "--new"]);
         assert_eq!(tcp, "80,443,12");
         assert_eq!(udp, "443,50000-50100");
         let s = nft_script(&tcp, &udp);
