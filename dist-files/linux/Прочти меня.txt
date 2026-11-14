@@ -7,9 +7,11 @@ Foxray — VPN-клиент (VLESS Reality, Hysteria2) поверх sing-box
    Папка должна лежать на обычном диске Linux (не на флешке/разделе Windows),
    иначе sing-box не получит права на сеть.
 2. Запусти ./foxray (или сначала ./install-menu.sh — появится в меню приложений).
-3. При первом подключении система спросит пароль: sing-box нужно право
-   создать сетевой адаптер VPN (TUN). Это делается один раз командой
-       pkexec setcap cap_net_admin,cap_net_bind_service,cap_net_raw+ep sing-box
+3. При первом подключении система один раз спросит пароль. Foxray выдаёт
+   sing-box право создать сетевой адаптер VPN (TUN) и ставит правило polkit,
+   чтобы VPN мог направлять DNS через себя без пароля при каждом подключении
+   (/etc/polkit-1/rules.d/49-foxray.rules). После обновления Foxray пароль
+   спросят ещё раз — у нового файла sing-box прав пока нет.
    Если окна с паролем нет — выполни в терминале из папки Foxray:
        sudo setcap cap_net_admin,cap_net_bind_service,cap_net_raw+ep ./sing-box
 
@@ -46,3 +48,5 @@ Foxray — VPN-клиент (VLESS Reality, Hysteria2) поверх sing-box
 2. Закрой Foxray (кнопка «Выход» в меню значка или в настройке «Закрыть»).
 3. Удали папку и, если запускал install-menu.sh,
    файл ~/.local/share/applications/foxray.desktop
+4. Правило DNS: sudo rm /etc/polkit-1/rules.d/49-foxray.rules
+   (на старых системах — /etc/polkit-1/localauthority/50-local.d/49-foxray.pkla)

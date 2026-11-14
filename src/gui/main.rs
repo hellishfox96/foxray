@@ -99,6 +99,12 @@ fn main() -> Result<(), slint::PlatformError> {
     if std::env::args().nth(1).as_deref() == Some("--zapret-helper") {
         std::process::exit(foxray::nfq::helper_main());
     }
+    // Linux: права sing-box на TUN и правило DNS — под pkexec, одним паролем.
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--setup-rights") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(foxray::sys::tun_rights::helper_main(&args));
+    }
     // Windows: отрисовка программная — у femtovg/Skia на дробном масштабе экрана (125 %, 150 %)
     // края скруглений (переключатели) получались с «заусенцами». Окно маленькое — CPU хватает.
     // Linux: остаётся обычная (femtovg) — с программной окно в Ubuntu/GNOME не реагировало на нажатия.
@@ -106,6 +112,25 @@ fn main() -> Result<(), slint::PlatformError> {
     #[cfg(windows)]
     if std::env::var_os("SLINT_BACKEND").is_none() {
         std::env::set_var("SLINT_BACKEND", "winit-software");
+    }
+    // Linux (X11): масштаб окна. Если рабочий стол не задал Xft.dpi (Xfce, Kali и др.),
+    // winit считает масштаб по физическому размеру экрана и на ноутбуках с плотным экраном
+    // делает окно в 1.5–2 раза больше, чем всё остальное (оно не влезает по высоте).
+    // Тогда берём масштаб рабочего стола (GDK_SCALE) или 1. Свой — через WINIT_X11_SCALE_FACTOR.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WINIT_X11_SCALE_FACTOR").is_none()
+        && std::env::var_os("SLINT_SCALE_FACTOR").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+    {
+        let xft_dpi = std::process::Command::new("xrdb")
+            .arg("-query")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("Xft.dpi"))
+            .unwrap_or(false);
+        if !xft_dpi {
+            let scale = std::env::var("GDK_SCALE").ok().and_then(|v| v.trim().parse::<f64>().ok()).filter(|f| *f >= 1.0).unwrap_or(1.0);
+            std::env::set_var("WINIT_X11_SCALE_FACTOR", scale.to_string());
+        }
     }
     let start_minimized = std::env::args().any(|a| a == "--minimized");
     let quit_cmd = std::env::args().any(|a| a == "--quit");
@@ -552,6 +577,23 @@ fn setup_home(ui: &AppWindow) {
     });
 
     let w = ui.as_weak();
+    let w2 = ui.as_weak();
+    ui.on_open_zapret_list(move || {
+        // Со страницы zapret: «Свои сайты» → список «Через zapret» («назад» — в «Правила»).
+        let ui = w2.unwrap();
+        let i = with_app(|app| {
+            let i = app.rules.lists.iter().position(|l| l.action == Action::Zapret);
+            app.list_sel = i;
+            i
+        });
+        if i.is_some() {
+            ui.set_editing_list_name(false);
+            refresh_rules(&ui);
+            ui.set_list_from_home(false);
+            ui.set_rules_view(1);
+            ui.set_tab(2);
+        }
+    });
     ui.on_route_clicked(move |target| {
         let ui = w.unwrap();
         match target {
@@ -564,9 +606,20 @@ fn setup_home(ui: &AppWindow) {
                 rules_changed(&ui, true);
                 show_toast(&ui, if direct { "Остальное — напрямую" } else { "Остальное — через VPN" });
             }
+            // Строка zapret — сразу список «Через zapret» в правилах («назад» вернёт на главную).
             1 => {
-                ui.set_settings_view(2);
-                ui.set_tab(3);
+                let i = with_app(|app| {
+                    let i = app.rules.lists.iter().position(|l| l.action == Action::Zapret);
+                    app.list_sel = i;
+                    i
+                });
+                if i.is_some() {
+                    ui.set_editing_list_name(false);
+                    refresh_rules(&ui);
+                    ui.set_list_from_home(true);
+                    ui.set_rules_view(1);
+                    ui.set_tab(2);
+                }
             }
             _ => {
                 ui.set_rules_view(0);
@@ -883,6 +936,8 @@ fn setup_servers(ui: &AppWindow) {
             }
             let key = selected_key(app).filter(|_| app.settings.selected != Some(i));
             let p = app.profiles.remove(i);
+            // Удалённый сервер — и из избранного.
+            app.settings.favorites.retain(|f| !f.matches(&p));
             reselect(app, key);
             save_all(app);
             Some(p.name)
@@ -945,6 +1000,55 @@ fn setup_servers(ui: &AppWindow) {
 
     let w = ui.as_weak();
     ui.on_refresh_group(move |key| update_subs(&w.unwrap(), Some(key.to_string())));
+
+    let w = ui.as_weak();
+    ui.on_toggle_fav(move |i| {
+        let ui = w.unwrap();
+        let added = with_app(|app| {
+            let p = app.profiles.get(i as usize)?.clone();
+            let added = if is_favorite(app, &p) {
+                app.settings.favorites.retain(|f| !f.matches(&p));
+                false
+            } else {
+                app.settings.favorites.push(store::Favorite::of(&p));
+                true
+            };
+            let _ = app.store.save_settings(&app.settings);
+            Some(added)
+        });
+        refresh_servers(&ui);
+        if let Some(a) = added {
+            show_toast(&ui, if a { "Добавлено в избранное" } else { "Убрано из избранного" });
+        }
+    });
+
+    let w = ui.as_weak();
+    ui.on_copy_sub_link(move |key| {
+        let ui = w.unwrap();
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(key.to_string())) {
+            Ok(()) => show_toast(&ui, "Ссылка на подписку скопирована"),
+            Err(e) => show_toast(&ui, format!("Буфер обмена недоступен: {e}")),
+        }
+    });
+
+    let w = ui.as_weak();
+    ui.on_remove_sub_key(move |key| remove_subscription(&w.unwrap(), &key));
+
+    let w = ui.as_weak();
+    ui.on_rename_group(move |key, name| {
+        let ui = w.unwrap();
+        let name = name.trim().to_string();
+        with_app(|app| {
+            if let Some(s) = app.settings.subscriptions.iter_mut().find(|s| s.url == key.as_str()) {
+                // Пусто — вернуть имя по адресу.
+                s.name = if name.is_empty() { Subscription::from_url(&s.url).name } else { name };
+                let _ = app.store.save_settings(&app.settings);
+            }
+        });
+        refresh_servers(&ui);
+        refresh_subs(&ui);
+        refresh_tray();
+    });
 
     let w = ui.as_weak();
     ui.on_ping_all(move || ping_all(&w.unwrap()));
@@ -1131,45 +1235,137 @@ fn ping_profiles(ui: &AppWindow, targets: Vec<(String, Profile)>) {
 }
 
 /// Список с группами: «Мои» и по подпискам.
+/// Флаг в начале имени (🇩🇪 Германия) → («DE», «Германия»). Без флага — («», имя).
+fn split_flag(name: &str) -> (String, String) {
+    let mut it = name.trim_start().chars();
+    let (a, b) = (it.next(), it.next());
+    let reg = |c: Option<char>| c.map(|c| c as u32).filter(|u| (0x1F1E6..=0x1F1FF).contains(u));
+    match (reg(a), reg(b)) {
+        (Some(x), Some(y)) => {
+            let code: String = [x, y].iter().map(|u| char::from_u32('A' as u32 + (u - 0x1F1E6)).unwrap()).collect();
+            (code, it.as_str().trim_start().to_string())
+        }
+        _ => (String::new(), name.to_string()),
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// «только что», «5 мин назад», «3 ч назад», «12.11».
+fn ago(t: u64, now: u64) -> String {
+    let d = now.saturating_sub(t);
+    match d {
+        0..=59 => "только что".into(),
+        60..=3599 => format!("{} мин назад", d / 60),
+        3600..=86399 => format!("{} ч назад", d / 3600),
+        _ => subs::short_date(t, now),
+    }
+}
+
+/// Ключ группы «Избранное» (у подписок ключ — их ссылка, у своих серверов — «»).
+const FAV_KEY: &str = "*fav";
+
+/// Избранные: подтянуть имя и адрес к текущим (сервер переименовали или подписка сменила адрес).
+fn heal_favorites(app: &mut App) {
+    let mut changed = false;
+    for f in &mut app.settings.favorites {
+        if let Some(p) = app.profiles.iter().find(|p| f.matches(p)) {
+            let now = store::Favorite::of(p);
+            if *f != now {
+                *f = now;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        let _ = app.store.save_settings(&app.settings);
+    }
+}
+
+fn is_favorite(app: &App, p: &Profile) -> bool {
+    app.settings.favorites.iter().any(|f| f.matches(p))
+}
+
 fn refresh_servers(ui: &AppWindow) {
     with_app(|app| {
+        heal_favorites(app);
+        let now = unix_now();
         let known: HashSet<&str> = app.settings.subscriptions.iter().map(|s| s.url.as_str()).collect();
-        let mut groups: Vec<(String, String, bool)> = vec![(String::new(), "Мои".into(), false)];
+        // (ключ, название, подписка)
+        let mut groups: Vec<(String, String, Option<&Subscription>)> =
+            vec![(FAV_KEY.into(), "Избранное".into(), None), (String::new(), "Серверы".into(), None)];
         for s in &app.settings.subscriptions {
-            groups.push((s.url.clone(), format!("Подписка {}", s.name), true));
+            groups.push((s.url.clone(), s.name.clone(), Some(s)));
         }
         let q = &app.search;
         let mut rows = Vec::new();
-        for (key, title, refreshable) in groups {
+        for (key, title, sub) in groups {
+            let fav_group = key == FAV_KEY;
             let members: Vec<usize> = app
                 .profiles
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| match p.sub.as_deref() {
-                    Some(u) if known.contains(u) => u == key,
-                    _ => key.is_empty(),
+                .filter(|(_, p)| {
+                    if fav_group {
+                        return is_favorite(app, p);
+                    }
+                    match p.sub.as_deref() {
+                        Some(u) if known.contains(u) => u == key,
+                        _ => key.is_empty(),
+                    }
                 })
                 .filter(|(_, p)| q.is_empty() || p.name.to_lowercase().contains(q) || p.server.to_lowercase().contains(q))
                 .map(|(i, _)| i)
                 .collect();
-            // Пустую группу «Мои» не показываем, если есть подписки; при поиске — любые пустые.
-            if members.is_empty() && (!q.is_empty() || (key.is_empty() && !known.is_empty())) {
+            // Пустое «Избранное» не показываем; пустые «Серверы» — если есть подписки; при поиске — любые пустые.
+            // Подписку без серверов (ошибка) показываем — чтобы её было видно и можно было удалить.
+            if members.is_empty() && (fav_group || !q.is_empty() || (key.is_empty() && !known.is_empty())) {
                 continue;
             }
             let collapsed = app.collapsed.contains(&key);
+            // Подпись под названием подписки: срок и когда обновлялась (или ошибка).
+            let (gsub, busy, bad) = match sub {
+                None => (String::new(), false, false),
+                Some(s) => {
+                    let info = app.sub_info.get(&s.url).cloned().unwrap_or_default();
+                    if info.starts_with("обновляется") {
+                        ("обновляется…".to_string(), true, false)
+                    } else if info.starts_with("не обновилась") {
+                        (info, false, true)
+                    } else {
+                        let mut parts = Vec::new();
+                        if let Some(e) = s.expire {
+                            parts.push(if e < now { "срок истёк".to_string() } else { format!("до {}", subs::short_date(e, now)) });
+                        }
+                        if s.updated > 0 {
+                            parts.push(format!("обновлено {}", ago(s.updated, now)));
+                        }
+                        (parts.join(" · "), false, false)
+                    }
+                }
+            };
             rows.push(Row {
                 kind: 0,
-                title: title.into(),
+                title: format!("{title} · {}", members.len()).into(),
+                sub: gsub.into(),
                 count: members.len() as i32,
                 key: key.clone().into(),
                 collapsed,
-                refreshable,
+                refreshable: sub.is_some(),
+                fav: fav_group,
+                busy,
+                bad,
+                first: true,
+                last: collapsed || members.is_empty(),
                 ..Default::default()
             });
             if collapsed {
                 continue;
             }
-            for i in members {
+            let n = members.len();
+            for (k, i) in members.into_iter().enumerate() {
                 let p = &app.profiles[i];
                 let (ping, ping_state) = match app.pings.get(&ping_key(p)) {
                     None => (String::new(), 0),
@@ -1177,20 +1373,25 @@ fn refresh_servers(ui: &AppWindow) {
                     Some(Ping::Ok(ms)) => (format!("{ms} мс"), if *ms < 150 { 1 } else { 2 }),
                     Some(Ping::Fail) => ("нет".into(), 3),
                 };
+                let (code, name) = split_flag(&p.name);
                 rows.push(Row {
                     kind: 1,
-                    title: p.name.clone().into(),
-                    sub: p.server.clone().into(),
+                    title: name.into(),
+                    code: code.into(),
+                    sub: format!("{} · {}", short_proto(p), p.server).into(),
                     badge: short_proto(p).into(),
                     ping: ping.into(),
                     ping_state,
                     selected: app.settings.selected == Some(i),
                     index: i as i32,
+                    key: key.clone().into(),
+                    fav: is_favorite(app, p),
+                    last: k + 1 == n,
                     ..Default::default()
                 });
             }
         }
-        ui.set_no_servers(app.profiles.is_empty());
+        ui.set_no_servers(app.profiles.is_empty() && app.settings.subscriptions.is_empty());
         ui.set_rows(ModelRc::new(VecModel::from(rows)));
     });
 }
@@ -1352,13 +1553,23 @@ fn connect(ui: &AppWindow) {
     });
     zap::set_server_ips(ui, server_ips);
 
-    // Linux: sing-box нужно право управлять сетью (TUN) — выдаём один раз через pkexec.
+    // Linux: sing-box нужно право управлять сетью (TUN), а systemd-resolved — разрешение
+    // настраивать DNS без пароля. Всё — одним окном пароля, обычно один раз.
     #[cfg(target_os = "linux")]
-    if foxray::sys::tun_rights::has(&singbox) == Some(false) {
-        with_app(|app| push_log(app, "foxray: выдаю sing-box права на TUN (pkexec setcap)…".into()));
-        if let Err(e) = foxray::sys::tun_rights::grant(&singbox) {
-            with_app(|app| app.want_connected = false);
-            return set_conn(ui, 3, Some(e));
+    {
+        use foxray::sys::tun_rights;
+        let caps = tun_rights::has(&singbox) == Some(false);
+        let dns = tun_rights::dns_rule_needed();
+        if caps || dns {
+            with_app(|app| push_log(app, "foxray: выдаю sing-box права на сеть и DNS (pkexec)…".into()));
+            if let Err(e) = tun_rights::grant(&singbox, caps, dns) {
+                if caps {
+                    with_app(|app| app.want_connected = false);
+                    return set_conn(ui, 3, Some(e));
+                }
+                // Без правила DNS VPN работает, просто система будет спрашивать пароль.
+                with_app(|app| push_log(app, format!("foxray: правило DNS не поставлено — {e}")));
+            }
         }
     }
 
@@ -1691,10 +1902,19 @@ fn update_subs(ui: &AppWindow, only: Option<String>) {
         list
     });
     refresh_subs(ui);
+    // Номер устройства для панелей с ограничением устройств — один на всю жизнь этой копии Foxray.
+    let dev = with_app(|app| {
+        if app.settings.hwid.is_empty() {
+            app.settings.hwid = subs::new_hwid();
+            let _ = app.store.save_settings(&app.settings);
+        }
+        subs::Device { hwid: app.settings.hwid.clone() }
+    });
     for sub in list {
         let weak = ui.as_weak();
+        let dev = dev.clone();
         std::thread::spawn(move || {
-            let res = subs::fetch(&sub);
+            let res = subs::fetch(&sub, &dev);
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = weak.upgrade() else { return };
                 apply_sub_result(&ui, &sub, res);
@@ -1703,14 +1923,24 @@ fn update_subs(ui: &AppWindow, only: Option<String>) {
     }
 }
 
-fn apply_sub_result(ui: &AppWindow, sub: &Subscription, res: Result<(Vec<Profile>, usize), String>) {
+fn apply_sub_result(ui: &AppWindow, sub: &Subscription, res: Result<subs::Fetched, String>) {
     let msg = with_app(|app| {
         // Подписку могли удалить, пока она скачивалась.
         if !app.settings.subscriptions.iter().any(|s| s.url == sub.url) {
             return None;
         }
         Some(match res {
-            Ok((list, bad)) => {
+            Ok((list, bad, meta)) => {
+                // Сведения панели: название (если своё имя не задавали) и срок действия.
+                if let Some(s) = app.settings.subscriptions.iter_mut().find(|s| s.url == sub.url) {
+                    s.updated = unix_now();
+                    s.expire = meta.expire;
+                    if let Some(t) = meta.title {
+                        if s.name == Subscription::from_url(&s.url).name {
+                            s.name = t;
+                        }
+                    }
+                }
                 let key = selected_key(app);
                 let n = list.len();
                 // Ставим новые серверы на место старых из этой подписки.
@@ -1725,11 +1955,12 @@ fn apply_sub_result(ui: &AppWindow, sub: &Subscription, res: Result<(Vec<Profile
                     info += &format!(" · пропущено {bad}");
                 }
                 app.sub_info.insert(sub.url.clone(), info);
-                format!("Подписка {}: {n} {}", sub.name, plural(n, "сервер", "сервера", "серверов"))
+                let name = app.settings.subscriptions.iter().find(|s| s.url == sub.url).map_or(sub.name.clone(), |s| s.name.clone());
+                format!("Подписка {name}: {n} {}", plural(n, "сервер", "сервера", "серверов"))
             }
             Err(e) => {
                 push_log(app, format!("foxray: подписка {} — {e}", sub.name));
-                app.sub_info.insert(sub.url.clone(), "не обновилась — подробности в журнале".into());
+                app.sub_info.insert(sub.url.clone(), format!("не обновилась: {e}"));
                 format!("Подписка {}: ошибка", sub.name)
             }
         })
@@ -1779,6 +2010,7 @@ fn action_to_idx(a: Action) -> i32 {
         Action::Proxy => 0,
         Action::Direct => 1,
         Action::Block => 2,
+        Action::Zapret => 3,
     }
 }
 
@@ -1790,9 +2022,12 @@ fn idx_to_action(i: i32) -> Action {
     }
 }
 
-fn summary(l: &RuleList) -> String {
+fn summary(l: &RuleList, zapret_on: bool) -> String {
     if l.entries.is_empty() {
         return "пусто".into();
+    }
+    if l.action == Action::Zapret && !zapret_on {
+        return "zapret выключен".into();
     }
     // Наборы показываем по названию сервиса, Telegram (домены + IP) — один раз.
     let mut names: Vec<String> = Vec::new();
@@ -1812,24 +2047,50 @@ fn summary(l: &RuleList) -> String {
     )
 }
 
+thread_local! {
+    /// Раскрыт ли блок «Из сборки zapret» в списке «Через zapret».
+    static ZAP_BUILD_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Домены из файлов сборки zapret (Flowseal) — показываем в «Через zapret» только для чтения.
+fn zapret_build_domains(app_dir: &Path) -> Vec<String> {
+    let dir = foxray::zapret::dir(app_dir);
+    if foxray::zapret::installed(&dir) {
+        foxray::zapret::domains(&dir)
+    } else {
+        Vec::new()
+    }
+}
+
 fn refresh_rules(ui: &AppWindow) {
+    let zapret_on = zap::routing_active();
+    ui.set_zapret_routing(zapret_on);
     with_app(|app| {
         if app.list_sel.map_or(false, |s| s >= app.rules.lists.len()) {
             app.list_sel = None;
         }
-        let cards: Vec<RuleCard> = app
-            .rules
-            .lists
-            .iter()
-            .map(|l| RuleCard {
+        // Две карточки: базовые списки и свои.
+        let mut base: Vec<RuleCard> = Vec::new();
+        let mut own: Vec<RuleCard> = Vec::new();
+        for (i, l) in app.rules.lists.iter().enumerate() {
+            let c = RuleCard {
                 name: l.name.clone().into(),
                 builtin: l.builtin,
                 action: action_to_idx(l.action),
                 enabled: l.enabled,
-                summary: summary(l).into(),
-            })
-            .collect();
-        ui.set_rule_cards(ModelRc::new(VecModel::from(cards)));
+                summary: summary(l, zapret_on).into(),
+                index: i as i32,
+                last: false,
+            };
+            if l.builtin { base.push(c) } else { own.push(c) }
+        }
+        for v in [&mut base, &mut own] {
+            if let Some(c) = v.last_mut() {
+                c.last = true;
+            }
+        }
+        ui.set_rule_cards(ModelRc::new(VecModel::from(base)));
+        ui.set_rule_cards_own(ModelRc::new(VecModel::from(own)));
         ui.set_list_sel(app.list_sel.map(|s| s as i32).unwrap_or(-1));
         match app.list_sel.and_then(|i| app.rules.lists.get(i)) {
             Some(l) => {
@@ -1838,10 +2099,30 @@ fn refresh_rules(ui: &AppWindow) {
                 ui.set_list_enabled(l.enabled);
                 ui.set_list_action(action_to_idx(l.action));
                 let dir = app.store.dir.join("rulesets");
+                let zap_list = l.action == Action::Zapret;
                 let entries: Vec<EntryItem> = l
                     .entries
                     .iter()
                     .map(|e| match (parse_entry(e), describe(e)) {
+                        // Что zapret не умеет — помечаем.
+                        (Ok(Entry::Process(_) | Entry::ProcessPath(_)), _) if zap_list => EntryItem {
+                            text: e.clone().into(),
+                            kind: "программы через zapret не работают — пропущено".into(),
+                            icon: 3,
+                            ..Default::default()
+                        },
+                        (Ok(Entry::Keyword(_)), _) if zap_list => EntryItem {
+                            text: e.clone().into(),
+                            kind: "слово zapret не понимает — пропущено".into(),
+                            icon: 3,
+                            ..Default::default()
+                        },
+                        (Ok(Entry::Cidr(_)), Ok(k)) if zap_list => EntryItem {
+                            text: e.clone().into(),
+                            kind: format!("{k} · не во всех стратегиях").into(),
+                            icon: 2,
+                            ..Default::default()
+                        },
                         (Ok(Entry::Geosite(t) | Entry::Geoip(t)), Ok(k)) => {
                             let status = app.set_status.get(&t).cloned().or_else(|| {
                                 (!geo::is_ready(&dir, &t)).then(|| "не скачан".to_string())
@@ -1852,7 +2133,7 @@ fn refresh_rules(ui: &AppWindow) {
                             if let Some(st) = status {
                                 kind = format!("{kind} · {st}");
                             }
-                            EntryItem { text: title.into(), kind: kind.into(), icon: if failed { 3 } else { 4 } }
+                            EntryItem { text: title.into(), kind: kind.into(), icon: if failed { 3 } else { 4 }, ..Default::default() }
                         }
                         (Ok(kind), Ok(k)) => EntryItem {
                             text: e.clone().into(),
@@ -1862,12 +2143,47 @@ fn refresh_rules(ui: &AppWindow) {
                                 Entry::Cidr(_) => 2,
                                 _ => 1,
                             },
+                            ..Default::default()
                         },
                         (_, Err(err)) | (Err(err), _) => {
-                            EntryItem { text: e.clone().into(), kind: err.into(), icon: 3 }
+                            EntryItem { text: e.clone().into(), kind: err.into(), icon: 3, ..Default::default() }
                         }
                     })
                     .collect();
+                let mut entries = entries;
+                // «Через zapret»: ниже своих записей — домены сборки zapret (свёрнуто, без крестика).
+                if zap_list {
+                    let build = zapret_build_domains(&app.store.dir);
+                    if !build.is_empty() {
+                        let open = ZAP_BUILD_OPEN.with(|c| c.get());
+                        entries.push(EntryItem {
+                            text: format!("Из сборки zapret · {}", build.len()).into(),
+                            kind: if open { "свернуть" } else { "показать" }.into(),
+                            icon: 5,
+                            ..Default::default()
+                        });
+                        if open {
+                            for d in build {
+                                let (text, kind) = match d.strip_prefix("full:") {
+                                    Some(x) => (x.to_string(), "только домен"),
+                                    None => (d, "домен + поддомены"),
+                                };
+                                entries.push(EntryItem { text: text.into(), kind: kind.into(), icon: 6, ..Default::default() });
+                            }
+                        }
+                    }
+                }
+                // Углы карточек: свои записи — одна карточка, «Из сборки zapret» — другая.
+                let n_own = entries.iter().take_while(|e| e.icon < 5).count();
+                if n_own > 0 {
+                    entries[0].first = true;
+                    entries[n_own - 1].last = true;
+                }
+                if let Some(e) = entries.last_mut() {
+                    if e.icon >= 5 {
+                        e.last = true;
+                    }
+                }
                 ui.set_entries(ModelRc::new(VecModel::from(entries)));
             }
             None => {
@@ -1929,6 +2245,7 @@ fn update_sets(ui: &AppWindow, force: bool) {
 /// Сохранить rules.json и (если подключены и apply) переподключиться через 1.5 с.
 fn rules_changed(ui: &AppWindow, apply: bool) {
     refresh_routes(ui);
+    zap::user_list_changed(ui);
     let weak = ui.as_weak();
     with_app(|app| {
         if let Err(e) = app.rules.save(&app.store.rules_path().to_string_lossy()) {
@@ -1957,6 +2274,7 @@ fn setup_rules(ui: &AppWindow) {
         let ui = w.unwrap();
         with_app(|app| app.list_sel = Some(i as usize));
         ui.set_editing_list_name(false);
+        ui.set_list_from_home(false);
         refresh_rules(&ui);
         ui.set_rules_view(1);
     });
@@ -2044,6 +2362,12 @@ fn setup_rules(ui: &AppWindow) {
 
     let w = ui.as_weak();
     ui.on_add_entry(move |text| add_entries(&w.unwrap(), &text));
+
+    let w = ui.as_weak();
+    ui.on_toggle_zap_build(move || {
+        ZAP_BUILD_OPEN.with(|c| c.set(!c.get()));
+        refresh_rules(&w.unwrap());
+    });
 
     let w = ui.as_weak();
     ui.on_remove_entry(move |i| {
@@ -2189,6 +2513,12 @@ fn refresh_set_picker(ui: &AppWindow) {
 }
 
 fn add_entries(ui: &AppWindow, text: &str) {
+    // «Через zapret»: домены, которые уже есть в сборке zapret, не дублируем.
+    let build = with_app(|app| {
+        let zap = app.list_sel.and_then(|i| app.rules.lists.get(i)).is_some_and(|l| l.action == Action::Zapret);
+        if zap { zapret_build_domains(&app.store.dir) } else { Vec::new() }
+    });
+    let mut dup: Vec<String> = Vec::new();
     let changed = with_list(|l| {
         let mut changed = false;
         // Несколько записей — через пробел, запятую или с новой строки.
@@ -2199,6 +2529,17 @@ fn add_entries(ui: &AppWindow, text: &str) {
             text.split(|c: char| c.is_whitespace() || c == ',' || c == ';').map(|s| s.trim().to_string()).collect()
         };
         for p in parts {
+            if !build.is_empty() {
+                let d = match parse_entry(&p) {
+                    Ok(Entry::DomainSuffix(d)) => Some(d),
+                    Ok(Entry::Domain(d)) => Some(format!("full:{d}")),
+                    _ => None,
+                };
+                if let Some(d) = d.filter(|d| build.iter().any(|b| b.eq_ignore_ascii_case(d))) {
+                    dup.push(d.trim_start_matches("full:").to_string());
+                    continue;
+                }
+            }
             if !p.is_empty() && !l.entries.iter().any(|e| e.eq_ignore_ascii_case(&p)) {
                 l.entries.push(p);
                 changed = true;
@@ -2207,6 +2548,9 @@ fn add_entries(ui: &AppWindow, text: &str) {
         changed
     })
     .unwrap_or(false);
+    if !dup.is_empty() {
+        show_toast(ui, format!("{} уже есть в сборке zapret", dup.join(", ")));
+    }
     if changed {
         rules_changed(ui, true);
         refresh_rules(ui);
@@ -2347,25 +2691,9 @@ fn setup_settings(ui: &AppWindow) {
     let w = ui.as_weak();
     ui.on_remove_sub(move |i| {
         let ui = w.unwrap();
-        let name = with_app(|app| {
-            let i = i as usize;
-            if i >= app.settings.subscriptions.len() {
-                return None;
-            }
-            let sub = app.settings.subscriptions.remove(i);
-            let key = selected_key(app);
-            app.profiles.retain(|p| p.sub.as_deref() != Some(sub.url.as_str()));
-            app.sub_info.remove(&sub.url);
-            reselect(app, key);
-            save_all(app);
-            Some(sub.name)
-        });
-        refresh_servers(&ui);
-        refresh_home(&ui);
-        refresh_subs(&ui);
-        refresh_tray();
-        if let Some(n) = name {
-            show_toast(&ui, format!("Подписка {n} удалена"));
+        let url = with_app(|app| app.settings.subscriptions.get(i as usize).map(|s| s.url.clone()));
+        if let Some(u) = url {
+            remove_subscription(&ui, &u);
         }
     });
 
@@ -2383,6 +2711,14 @@ fn setup_settings(ui: &AppWindow) {
             p
         });
         open_path(&path, true);
+    });
+
+    let w = ui.as_weak();
+    ui.on_open_log(move || {
+        // Журнал пишут не только sing-box, но и подписки, zapret, обновление — показываем свежий.
+        let ui = w.unwrap();
+        refresh_log(&ui);
+        ui.set_settings_view(1);
     });
 
     let w = ui.as_weak();
@@ -2505,5 +2841,27 @@ fn poll_tray(ui: &AppWindow) {
             | TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => show_window(ui),
             _ => {}
         }
+    }
+}
+
+/// Удалить подписку вместе с её серверами (из настроек и со вкладки «Серверы»).
+fn remove_subscription(ui: &AppWindow, url: &str) {
+    let name = with_app(|app| {
+        let i = app.settings.subscriptions.iter().position(|s| s.url == url)?;
+        let sub = app.settings.subscriptions.remove(i);
+        let key = selected_key(app);
+        app.settings.favorites.retain(|f| f.sub != sub.url);
+        app.profiles.retain(|p| p.sub.as_deref() != Some(sub.url.as_str()));
+        app.sub_info.remove(&sub.url);
+        reselect(app, key);
+        save_all(app);
+        Some(sub.name)
+    });
+    refresh_servers(ui);
+    refresh_home(ui);
+    refresh_subs(ui);
+    refresh_tray();
+    if let Some(n) = name {
+        show_toast(ui, format!("Подписка {n} удалена"));
     }
 }

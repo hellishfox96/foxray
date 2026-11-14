@@ -71,6 +71,8 @@ impl ZapMatch {
                     z.procs.push(p.to_string());
                 } else if e.to_ascii_lowercase().ends_with(".exe") {
                     z.procs.push(e.clone());
+                } else if e.contains(':') || e.contains('/') || e.parse::<std::net::IpAddr>().is_ok() {
+                    // наборы и адреса по имени хоста не сравнить — пропускаем
                 } else {
                     z.suffix.push(e.to_ascii_lowercase());
                 }

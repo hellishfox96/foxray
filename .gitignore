@@ -28,3 +28,4 @@ sing-box.exe
 *.pdb
 Thumbs.db
 .DS_Store
+.dns-rule-ok

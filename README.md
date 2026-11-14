@@ -20,7 +20,8 @@ VPN-клиент для Windows и Linux поверх [sing-box](https://github.
 
 **Linux** — `Foxray-…-linux-x86_64.tar.gz` (Ubuntu 20.04+ и похожие). Распаковать в домашнюю папку
 (не на NTFS/FAT) и запустить `./foxray`. `./install-menu.sh` добавит Foxray в меню приложений.
-При первом подключении система спросит пароль — чтобы выдать sing-box права на TUN.
+При первом подключении система один раз спросит пароль: sing-box получает права на TUN,
+а systemd-resolved — правило polkit, чтобы DNS через VPN настраивался без пароля.
 Для трея в GNOME нужно расширение AppIndicator (в Ubuntu включено).
 
 Серверы и настройки хранятся рядом с программой (`profiles.json`, `settings.json`, `rules.json`).
@@ -34,6 +35,8 @@ VPN-клиент для Windows и Linux поверх [sing-box](https://github.
 [zapret](https://github.com/bol-van/zapret). Используются стратегии и списки сборки
 [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) — кнопка «Скачать» загружает её.
 «Подобрать стратегию» по очереди проверяет все и выбирает рабочую.
+Свои сайты — в «Правилах», список «Через zapret»: домены, IP-адреса и готовые наборы.
+Пока zapret включён, они идут мимо VPN через zapret, а без него — как всё остальное.
 
 - Windows: запускается `winws.exe` из сборки.
 - Linux: вместо него `nfqws` (скачивается вместе со сборкой); при включении система спросит пароль.

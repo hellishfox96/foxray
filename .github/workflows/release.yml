@@ -1,6 +1,7 @@
 # Сборка выпуска: метка vX.Y.Z → GitHub собирает Windows и Linux и выкладывает Release.
-#   1. Поменять version в Cargo.toml (например, 0.7.0) и закоммитить.
+#   1. Поменять version в Cargo.toml (например, 0.7.0), дописать раздел «## 0.7.0» в CHANGELOG.md, закоммитить.
 #   2. git tag v0.7.0 && git push && git push --tags
+# Описание выпуска — пункты раздела этой версии из CHANGELOG.md (их же Foxray показывает в «Что нового»).
 # Foxray у всех увидит новую версию в «Настройки → Обновление».
 name: release
 
@@ -39,10 +40,17 @@ jobs:
           Get-ChildItem sb -Recurse -Filter LICENSE | Select-Object -First 1 | Copy-Item -Destination "dist/Foxray/sing-box LICENSE.txt"
           Copy-Item "dist-files/Прочти меня.txt" dist/Foxray/
           Compress-Archive -Path dist/Foxray -DestinationPath "dist/Foxray-$v-windows-x64.zip"
+      - name: Что нового (из CHANGELOG.md)
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '{ sub(/\r$/, "") } /^## /{ p = ($2 == v); next } p' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || echo "- Подробности — в истории изменений на GitHub" > notes.md
+          cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
-          generate_release_notes: true
+          body_path: notes.md
 
   linux:
     # Сборка через zig под glibc 2.31 — запускается на Ubuntu 20.04 / Debian 11 и новее.
@@ -70,6 +78,14 @@ jobs:
           cp dist-files/linux/* "$out/"
           chmod +x "$out/foxray" "$out/sing-box" "$out/install-menu.sh"
           tar -czf "dist/Foxray-${v}-linux-x86_64.tar.gz" -C dist foxray
+      - name: Что нового (из CHANGELOG.md)
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '{ sub(/\r$/, "") } /^## /{ p = ($2 == v); next } p' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || echo "- Подробности — в истории изменений на GitHub" > notes.md
+          cat notes.md
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz
+          body_path: notes.md

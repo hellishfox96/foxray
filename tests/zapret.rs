@@ -8,9 +8,11 @@ fn real_strategies_parse() {
     let list = zapret::strategies(&dir);
     assert!(list.len() > 5, "мало стратегий: {}", list.len());
     let ex = dir.join("lists").join(zapret::EXCLUDE_FILE);
+    let (h, i) = (dir.join("lists").join(zapret::USER_HOSTLIST), dir.join("lists").join(zapret::USER_IPSET));
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i) };
     for s in &list {
         let text = std::fs::read_to_string(&s.file).unwrap();
-        let args = zapret::parse_bat(&text, &dir, Some(&ex)).unwrap_or_else(|e| panic!("{}: {e}", s.id));
+        let args = zapret::parse_bat(&text, &dir, extra).unwrap_or_else(|e| panic!("{}: {e}", s.id));
         assert!(args[0].starts_with("--wf-"), "{}: {:?}", s.id, &args[..2]);
         // все упомянутые файлы существуют (кроме *-user, их создаёт ensure_user_lists, и нашего исключения)
         for a in &args {
@@ -42,9 +44,12 @@ fn strategies_pass_nfqws_dry_run() {
     };
     zapret::ensure_user_lists(&dir);
     let ex = zapret::write_exclude(&dir, &[]);
+    let user = zapret::UserLists { hosts: vec!["rutracker.org".into(), "^x.com".into()], ips: vec!["104.16.0.0/13".into()] };
+    let (h, i) = zapret::write_user_lists(&dir, &user);
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i) };
     for s in zapret::strategies(&dir) {
         let text = std::fs::read_to_string(&s.file).unwrap();
-        let win = zapret::parse_bat(&text, &dir, Some(&ex)).unwrap();
+        let win = zapret::parse_bat(&text, &dir, extra).unwrap();
         let (args, tcp, _udp) = foxray::nfq::plan(&win).unwrap();
         assert!(!tcp.is_empty(), "{}", s.id);
         let out = std::process::Command::new(&nfqws)
@@ -63,4 +68,20 @@ fn strategies_pass_nfqws_dry_run() {
         );
         println!("{:<22} ok", s.title);
     }
+}
+
+/// Набор .srs → домены и адреса для zapret. sing-box — в SINGBOX, папка с geosite-rutracker.srs
+/// и geoip-telegram.srs — в SRS_DIR; иначе пропуск.
+#[test]
+fn sets_expand_for_zapret() {
+    let (Some(sb), Some(dir)) = (std::env::var_os("SINGBOX").map(PathBuf::from), std::env::var_os("SRS_DIR").map(PathBuf::from)) else {
+        return;
+    };
+    let e: Vec<String> = vec!["geosite:rutracker".into(), "geoip:telegram".into(), "x.com".into()];
+    let u = zapret::user_lists(&e, &dir, Some(&sb));
+    assert!(u.hosts.iter().any(|h| h == "rutracker.org"), "{:?}", u.hosts);
+    assert!(u.hosts.iter().any(|h| h == "x.com"));
+    assert!(u.ips.iter().any(|i| i == "91.108.4.0/22"), "{:?}", u.ips);
+    // второй раз — из кеша
+    assert_eq!(zapret::user_lists(&e, &dir, Some(&sb)), u);
 }

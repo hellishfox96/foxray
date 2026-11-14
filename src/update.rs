@@ -100,6 +100,70 @@ pub fn latest() -> Result<Release, String> {
     Ok(Release { version, url, notes })
 }
 
+/// Выпуск для списка «Что нового».
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReleaseInfo {
+    pub version: String,
+    /// «15.11.2026»
+    pub date: String,
+    /// Пункты списка изменений.
+    pub notes: Vec<String>,
+}
+
+/// Последние выпуски (новые сверху) — для страницы «Обновление».
+pub fn releases() -> Result<Vec<ReleaseInfo>, String> {
+    let repo = repo().ok_or("в Cargo.toml не указан repository")?;
+    let v: serde_json::Value = agent(Duration::from_secs(20))
+        .get(&format!("https://api.github.com/repos/{repo}/releases?per_page=10"))
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| format!("GitHub не ответил: {e}"))?
+        .into_string()
+        .map_err(|e| e.to_string())
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
+    Ok(v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| !r["draft"].as_bool().unwrap_or(false) && !r["prerelease"].as_bool().unwrap_or(false))
+        .filter_map(|r| {
+            let version = r["tag_name"].as_str()?.trim_start_matches('v').to_string();
+            let date = r["published_at"].as_str().map(iso_date).unwrap_or_default();
+            Some(ReleaseInfo { version, date, notes: release_notes(r["body"].as_str().unwrap_or("")) })
+        })
+        .collect())
+}
+
+/// «2026-11-15T10:20:00Z» → «15.11.2026».
+fn iso_date(s: &str) -> String {
+    let d = s.get(..10).unwrap_or("");
+    let p: Vec<&str> = d.split('-').collect();
+    if p.len() == 3 { format!("{}.{}.{}", p[2], p[1], p[0]) } else { String::new() }
+}
+
+/// Описание выпуска (Markdown) → пункты: строки «- …» / «* …»; служебное GitHub («Full Changelog»,
+/// заголовки, «by @… in #…») убираем. Нет пунктов — берём обычные строки.
+pub fn release_notes(body: &str) -> Vec<String> {
+    let clean = |l: &str| -> Option<String> {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') || l.contains("Full Changelog") || l.starts_with("**Full") {
+            return None;
+        }
+        let l = l.split(" by @").next().unwrap_or(l).trim();
+        Some(l.replace("**", "").replace('`', ""))
+    };
+    let bullets: Vec<String> = body
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start();
+            t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")).and_then(clean)
+        })
+        .collect();
+    if !bullets.is_empty() {
+        return bullets;
+    }
+    body.lines().filter_map(clean).collect()
+}
+
 /// Какие файлы берём из архива: (имя в архиве, куда положить рядом с Foxray).
 fn wanted(exe: &Path) -> Vec<(&'static str, PathBuf)> {
     let dir = exe.parent().unwrap_or(Path::new("."));
@@ -226,6 +290,15 @@ mod tests {
         assert!(!newer("0.6.0", "0.6.0"));
         assert!(!newer("0.6.0-beta", "0.6.0"));
         assert!(!newer("0.5.9", "0.6.0"));
+    }
+
+    #[test]
+    fn notes() {
+        let body = "## Что нового\n- Вкладка «Серверы» в новом стиле\n* **Избранное** by @x in #3\n\n**Full Changelog**: https://…";
+        assert_eq!(release_notes(body), vec!["Вкладка «Серверы» в новом стиле", "Избранное"]);
+        assert_eq!(release_notes("**Full Changelog**: https://github.com/x/y/commits/v0.6.0"), Vec::<String>::new());
+        assert_eq!(release_notes("Первый выпуск"), vec!["Первый выпуск"]);
+        assert_eq!(iso_date("2026-11-15T10:20:00Z"), "15.11.2026");
     }
 
     #[test]

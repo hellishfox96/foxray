@@ -45,10 +45,10 @@ fn builtin_lists_always_present() {
         {"name":"Напрямую","action":"direct","entries":["b.com"]}]}"#).unwrap();
     r.ensure_builtin();
     let names: Vec<_> = r.lists.iter().map(|l| (l.name.as_str(), l.builtin)).collect();
-    assert_eq!(names, vec![("Напрямую", true), ("Через VPN", true), ("Блок", true), ("Мой", false)]);
+    assert_eq!(names, vec![("Напрямую", true), ("Через zapret", true), ("Через VPN", true), ("Блок", true), ("Мой", false)]);
     assert_eq!(r.lists[0].entries, vec!["b.com"]); // существующий список стал базовым, записи на месте
     r.ensure_builtin();
-    assert_eq!(r.lists.len(), 4); // повторный вызов ничего не дублирует
+    assert_eq!(r.lists.len(), 5); // повторный вызов ничего не дублирует
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn old_presets_migrate_into_lists() {
     assert!(r.migrate_presets());
     assert!(r.presets.is_empty());
     assert_eq!(r.lists[0].entries, vec!["geosite:category-ru", "geoip:ru"]);
-    assert_eq!(r.lists[2].entries, vec!["geosite:category-ads-all"]);
+    assert_eq!(r.lists[3].entries, vec!["geosite:category-ads-all"]);
     assert_eq!(r.set_tags(), vec!["geosite-category-ru", "geoip-ru", "geosite-category-ads-all"]);
 }
 
@@ -98,4 +98,16 @@ fn linux_programs() {
     assert_eq!(parse_entry("process:python3.12").unwrap(), Entry::Process("python3.12".into()));
     // подсеть — не путь
     assert_eq!(parse_entry("10.0.0.0/8").unwrap(), Entry::Cidr("10.0.0.0/8".into()));
+}
+
+#[test]
+fn zapret_list_not_in_config() {
+    // «Через zapret» в конфиг не попадает сам — его добавляет окно, когда zapret включён.
+    let mut r: Rules = serde_json::from_str(r#"{"lists":[{"name":"Через zapret","action":"zapret","entries":["rutracker.org"]}]}"#).unwrap();
+    r.ensure_builtin();
+    assert_eq!(r.lists[1].action, Action::Zapret);
+    assert!(r.lists[1].builtin);
+    let c = foxray::rules::compile(&r);
+    assert!(c.route.is_empty(), "{:?}", c.route);
+    assert!(c.dns.is_empty());
 }

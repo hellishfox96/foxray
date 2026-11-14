@@ -32,6 +32,10 @@ pub(super) struct ZapState {
     /// Linux: пароль не ввели — сами больше не спрашиваем (до явного действия).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     refused: bool,
+    /// Список «Через zapret», с которым zapret запущен (чтобы перезапускать только при изменении).
+    user_sig: String,
+    /// Отложенный перезапуск после правки списка: срабатывает только последний.
+    user_gen: u64,
 }
 
 /// Linux: zapret работает через помощника с правами root (pkexec, пароль — раз за запуск Foxray).
@@ -93,6 +97,73 @@ fn zdir() -> PathBuf {
     with_app(|app| zapret::dir(&app.store.dir))
 }
 
+/// Включённый список «Через zapret» (записи как в rules.json). Пусто — нет или выключен.
+fn user_entries() -> Vec<String> {
+    with_app(|app| {
+        app.rules
+            .lists
+            .iter()
+            .filter(|l| l.enabled && l.action == Action::Zapret)
+            .flat_map(|l| l.entries.iter().cloned())
+            .collect()
+    })
+}
+
+/// Отпечаток списка «Через zapret»: записи и какие наборы уже скачаны.
+fn user_sig() -> String {
+    let entries = user_entries();
+    let sets = with_app(|app| app.store.dir.join("rulesets"));
+    entries
+        .iter()
+        .map(|e| match foxray::rules::parse_entry(e) {
+            Ok(foxray::rules::Entry::Geosite(t) | foxray::rules::Entry::Geoip(t)) => {
+                let m = std::fs::metadata(geo::set_path(&sets, &t)).and_then(|m| m.modified()).ok();
+                format!("{e}@{m:?}")
+            }
+            _ => e.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Записать list-foxray.txt и ipset-foxray.txt из списка «Через zapret».
+fn write_user_files(dir: &Path) -> (PathBuf, PathBuf) {
+    let entries = user_entries();
+    let (sets, singbox) = with_app(|app| (app.store.dir.join("rulesets"), store::singbox_path(&app.store.dir)));
+    let lists = zapret::user_lists(&entries, &sets, singbox.as_deref());
+    let sig = user_sig();
+    with_app(|app| app.zap.user_sig = sig);
+    zapret::write_user_lists(dir, &lists)
+}
+
+/// Список «Через zapret» поменялся (правка, включение, скачался набор) — перезапустить zapret
+/// через 1.5 с, если он работает. Вызывать при любом изменении правил.
+pub(super) fn user_list_changed(ui: &AppWindow) {
+    let running = with_app(|app| app.zap.winws.is_some() && app.zap.cancel.is_none());
+    if !running || user_sig() == with_app(|app| app.zap.user_sig.clone()) {
+        return;
+    }
+    let gen = with_app(|app| {
+        app.zap.user_gen += 1;
+        app.zap.user_gen
+    });
+    let w = ui.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(1500), move || {
+        let Some(ui) = w.upgrade() else { return };
+        if with_app(|app| app.zap.user_gen == gen && app.zap.winws.is_some()) && user_sig() != with_app(|app| app.zap.user_sig.clone()) {
+            apply(&ui);
+            if with_app(|app| app.zap.winws.is_some()) {
+                show_toast(&ui, "Zapret перезапущен с новым списком");
+            }
+        }
+    });
+}
+
+/// Zapret сейчас обходит блокировки (включён и скачан) — список «Через zapret» действует.
+pub(super) fn routing_active() -> bool {
+    zapret::supported() && with_app(|app| app.settings.zapret_enabled) && zapret::installed(&zdir())
+}
+
 fn set_status(text: impl Into<String>, bad: bool) {
     with_app(|app| {
         app.zap.status = text.into();
@@ -105,6 +176,18 @@ fn parse_score(s: &str) -> Option<(usize, usize)> {
     let head = s.split_whitespace().next()?;
     let (a, b) = head.split_once('/')?;
     Some((a.parse().ok()?, b.parse().ok()?))
+}
+
+/// Для сортировки: лучше — больше открылось, потом быстрее. «7/7 · 180 мс» → (7/7, 180).
+fn score_rank(s: &str) -> (i64, i64) {
+    let (ok, total) = parse_score(s).unwrap_or((0, 1));
+    let ms: i64 = s.split('·').nth(1).and_then(|x| x.trim().split_whitespace().next()?.parse().ok()).unwrap_or(99_999);
+    (-((ok * 1000 / total.max(1)) as i64), ms)
+}
+
+thread_local! {
+    /// Раскрыт ли блок «Ещё N — не проверены».
+    static MORE_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn score_state(s: &str) -> i32 {
@@ -177,6 +260,12 @@ pub(super) fn setup(ui: &AppWindow) {
 
     let w = ui.as_weak();
     ui.on_zapret_download(move || download(&w.unwrap()));
+
+    let w = ui.as_weak();
+    ui.on_zapret_toggle_more(move || {
+        MORE_OPEN.with(|c| c.set(!c.get()));
+        refresh(&w.unwrap());
+    });
 
     let w = ui.as_weak();
     ui.on_zapret_test(move || start_test(&w.unwrap()));
@@ -263,19 +352,70 @@ pub(super) fn refresh(ui: &AppWindow) {
             }
             .into(),
         );
-        let rows: Vec<ZapretRow> = list
-            .iter()
-            .map(|s| {
-                let testing = z.testing_id.as_deref() == Some(s.id.as_str());
-                let result = app.settings.zapret_results.get(&s.id).cloned().unwrap_or_default();
-                ZapretRow {
-                    title: s.title.clone().into(),
-                    result: if testing { "проверяю…".into() } else if result.is_empty() { "не проверена".into() } else { result.clone().into() },
-                    selected: s.id == *sel,
-                    state: if testing { 4 } else { score_state(&result) },
-                }
-            })
-            .collect();
+        // Сверху — проверяемая и проверенные (лучшие первыми), остальные свёрнуты в «Ещё N».
+        let testing_any = z.cancel.is_some();
+        let mut tested: Vec<(usize, ZapretRow, (i64, i64))> = Vec::new();
+        let mut rest: Vec<(usize, ZapretRow)> = Vec::new();
+        for (i, s) in list.iter().enumerate() {
+            let testing = z.testing_id.as_deref() == Some(s.id.as_str());
+            let result = app.settings.zapret_results.get(&s.id).cloned().unwrap_or_default();
+            let row = ZapretRow {
+                title: s.title.clone().into(),
+                result: if testing {
+                    "проверяю…".into()
+                } else if result.is_empty() {
+                    "".into()
+                } else if score_state(&result) == 3 {
+                    "не работает".into()
+                } else {
+                    result.clone().into()
+                },
+                selected: s.id == *sel,
+                state: if testing { 4 } else { score_state(&result) },
+                index: i as i32,
+                ..Default::default()
+            };
+            if testing {
+                tested.insert(0, (i, row, (i64::MIN, 0)));
+            } else if !result.is_empty() {
+                tested.push((i, row, score_rank(&result)));
+            } else {
+                rest.push((i, row));
+            }
+        }
+        tested.sort_by_key(|t| t.2);
+        let mut rows: Vec<ZapretRow> = tested.into_iter().map(|t| t.1).collect();
+        // Ничего не проверено — выбранную показываем сверху.
+        if rows.is_empty() {
+            if let Some(p) = rest.iter().position(|r| r.1.selected) {
+                rows.push(rest.remove(p).1);
+            }
+        }
+        if !rest.is_empty() {
+            let open = MORE_OPEN.with(|c| c.get());
+            rows.push(ZapretRow {
+                title: format!("Ещё {} — {}", rest.len(), if testing_any { "в очереди" } else { "не проверены" }).into(),
+                header: true,
+                selected: open, // у шапки — «раскрыто»
+                ..Default::default()
+            });
+            if open {
+                rows.extend(rest.into_iter().map(|r| r.1));
+            }
+        }
+        if let Some(r) = rows.first_mut() {
+            r.first = true;
+        }
+        if let Some(r) = rows.last_mut() {
+            r.last = true;
+        }
+        ui.set_zapret_test_pos(z.test_pos.0 as i32);
+        ui.set_zapret_test_total(z.test_pos.1 as i32);
+        ui.set_zapret_test_title(z.test_title.clone().into());
+        let user_n: usize = app.rules.lists.iter().filter(|l| l.action == Action::Zapret).map(|l| l.entries.len()).sum();
+        ui.set_zapret_user_sub(
+            if user_n == 0 { "«Через zapret» в правилах · пусто".to_string() } else { format!("«Через zapret» в правилах · {}", plural_n(user_n)) }.into(),
+        );
         ui.set_zapret_rows(ModelRc::new(VecModel::from(rows)));
 
         // Плитка на главной.
@@ -307,6 +447,10 @@ pub(super) fn refresh(ui: &AppWindow) {
         );
     });
     refresh_routes(ui);
+    // Карточка «Через zapret» в правилах зависит от того, включён ли zapret.
+    if ui.get_zapret_routing() != routing_active() {
+        refresh_rules(ui);
+    }
 }
 
 /// Строка zapret для «Куда идёт трафик»: (название, подпись, работает ли). None — zapret выключен.
@@ -326,7 +470,13 @@ pub(super) fn home_route() -> Option<(String, String, bool)> {
         } else {
             "zapret не запущен".into()
         };
-        Some(("Discord, YouTube".to_string(), sub, running))
+        // Свой список «Через zapret» — следом: «Discord, YouTube, rutracker.org и ещё 2».
+        let mut names: Vec<String> = vec!["Discord".into(), "YouTube".into()];
+        for l in app.rules.lists.iter().filter(|l| l.enabled && l.action == Action::Zapret) {
+            names.extend(l.entries.iter().cloned());
+        }
+        let all = RuleList { name: String::new(), builtin: false, enabled: true, action: Action::Zapret, entries: names };
+        Some((summarize(&[&all]), sub, running))
     })
 }
 
@@ -404,11 +554,13 @@ fn prepare_args(dir: &Path) -> Result<(String, Vec<String>), String> {
     zapret::ensure_user_lists(dir);
     let ips = with_app(|app| app.zap.ips.clone());
     let ex = zapret::write_exclude(dir, &ips);
+    let (host, ipset) = write_user_files(dir);
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset) };
     let list = zapret::strategies(dir);
     let want = with_app(|app| app.settings.zapret_strategy.clone());
     let s = list.iter().find(|s| s.id == want).or(list.first()).ok_or("в папке zapret нет стратегий")?;
     let text = std::fs::read_to_string(&s.file).map_err(|e| format!("{}: {e}", s.id))?;
-    let args = zapret::parse_bat(&text, dir, Some(&ex)).map_err(|e| format!("{}: {e}", s.title))?;
+    let args = zapret::parse_bat(&text, dir, extra).map_err(|e| format!("{}: {e}", s.title))?;
     Ok((s.id.clone(), args))
 }
 
@@ -446,6 +598,17 @@ pub(super) fn routing_list() -> Option<RuleList> {
     } else {
         for p in ["Discord", "discord", "DiscordPTB", "DiscordCanary", "vesktop", "Vesktop", "equibop", "legcord", "armcord"] {
             entries.push(format!("process:{p}"));
+        }
+    }
+    // Свой список «Через zapret»: то, что zapret умеет обходить (домены, адреса, наборы).
+    for e in user_entries() {
+        use foxray::rules::Entry;
+        let ok = matches!(
+            foxray::rules::parse_entry(&e),
+            Ok(Entry::DomainSuffix(_) | Entry::Domain(_) | Entry::Cidr(_) | Entry::Geosite(_) | Entry::Geoip(_))
+        );
+        if ok && !entries.contains(&e) {
+            entries.push(e);
         }
     }
     Some(RuleList { name: "zapret".into(), builtin: false, enabled: true, action: Action::Direct, entries })
@@ -565,11 +728,13 @@ fn start_test(ui: &AppWindow) {
     // Аргументы всех стратегий готовим здесь; битые сразу помечаем.
     zapret::ensure_user_lists(&dir);
     let ex = zapret::write_exclude(&dir, &with_app(|app| app.zap.ips.clone()));
+    let (host, ipset) = write_user_files(&dir);
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset) };
     let mut jobs = Vec::new();
     for s in zapret::strategies(&dir) {
         let parsed = std::fs::read_to_string(&s.file)
             .map_err(|e| e.to_string())
-            .and_then(|t| zapret::parse_bat(&t, &dir, Some(&ex)));
+            .and_then(|t| zapret::parse_bat(&t, &dir, extra));
         match parsed {
             Ok(args) => jobs.push((s.id, s.title, args)),
             Err(e) => {
@@ -680,4 +845,9 @@ fn start_test(ui: &AppWindow) {
             apply(ui);
         }));
     });
+}
+
+/// «1 запись», «3 записи», «7 записей».
+fn plural_n(n: usize) -> String {
+    format!("{n} {}", plural(n, "запись", "записи", "записей"))
 }

@@ -28,6 +28,9 @@ pub enum Action {
     Direct,
     /// Заблокировать
     Block,
+    /// Через zapret: при включённом zapret — напрямую (zapret обходит блокировку),
+    /// при выключенном список не действует. В конфиг его добавляет окно (см. gui/zap.rs).
+    Zapret,
 }
 
 impl Action {
@@ -36,6 +39,7 @@ impl Action {
             Action::Proxy => Some("proxy"),
             Action::Direct => Some("direct"),
             Action::Block => None,
+            Action::Zapret => Some("direct"),
         }
     }
 }
@@ -86,11 +90,15 @@ impl Default for Rules {
 }
 
 impl Rules {
-    /// Три базовых списка — «Напрямую», «Через VPN», «Блок» — есть всегда.
+    /// Базовые списки — «Напрямую», «Через zapret», «Через VPN», «Блок» — есть всегда.
     /// Если в файле уже есть список с таким именем и типом, он становится базовым.
     pub fn ensure_builtin(&mut self) {
-        const BASE: [(&str, Action); 3] =
-            [("Напрямую", Action::Direct), ("Через VPN", Action::Proxy), ("Блок", Action::Block)];
+        const BASE: [(&str, Action); 4] = [
+            ("Напрямую", Action::Direct),
+            ("Через zapret", Action::Zapret),
+            ("Через VPN", Action::Proxy),
+            ("Блок", Action::Block),
+        ];
         for (pos, (name, action)) in BASE.iter().enumerate() {
             let idx = self
                 .lists
@@ -366,7 +374,10 @@ pub fn compile_with(rules: &Rules, available: impl Fn(&str) -> bool) -> Compiled
     let mut set_dns = Vec::new();
 
     // Блок-списки — первыми, чтобы перебить всё остальное.
-    let mut ordered: Vec<&RuleList> = rules.lists.iter().filter(|l| l.enabled).collect();
+    // «Через zapret» здесь не действует: окно само добавляет его записи в список zapret,
+    // когда zapret включён (без zapret эти адреса идут как всё остальное).
+    let mut ordered: Vec<&RuleList> =
+        rules.lists.iter().filter(|l| l.enabled && l.action != Action::Zapret).collect();
     ordered.sort_by_key(|l| l.action != Action::Block);
 
     for list in ordered {
@@ -385,7 +396,7 @@ pub fn compile_with(rules: &Rules, available: impl Fn(&str) -> bool) -> Compiled
             for m in g.domain_matchers() {
                 let mut r = m;
                 match list.action {
-                    Action::Direct => r["server"] = json!("dns-local"),
+                    Action::Direct | Action::Zapret => r["server"] = json!("dns-local"),
                     Action::Proxy => r["server"] = json!("dns-remote"),
                     Action::Block => r["action"] = json!("predefined"),
                 }
@@ -422,7 +433,7 @@ pub fn compile_with(rules: &Rules, available: impl Fn(&str) -> bool) -> Compiled
         if !site_tags.is_empty() {
             let mut d = json!({ "rule_set": site_tags });
             match list.action {
-                Action::Direct => d["server"] = json!("dns-local"),
+                Action::Direct | Action::Zapret => d["server"] = json!("dns-local"),
                 Action::Proxy => d["server"] = json!("dns-remote"),
                 Action::Block => {
                     d["action"] = json!("predefined");

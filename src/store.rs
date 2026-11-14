@@ -54,11 +54,38 @@ pub struct AppSettings {
     pub zapret_results: std::collections::BTreeMap<String, String>,
     /// Включать zapret при запуске Foxray (если был включён при выходе). Выкл — после запуска zapret выключен.
     pub zapret_autostart: bool,
+    /// Номер этого устройства для подписок с ограничением устройств (HWID). Создаётся сам.
+    pub hwid: String,
+    /// Избранные серверы (блок «Избранное» сверху на вкладке «Серверы»).
+    pub favorites: Vec<Favorite>,
+}
+
+/// Избранный сервер. Номер в списке не годится — подписка при обновлении заменяет серверы,
+/// поэтому запоминаем, откуда он, имя и адрес: найдётся, если не поменялось хотя бы одно из двух.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Favorite {
+    /// Ссылка подписки («» — свой сервер).
+    pub sub: String,
+    pub name: String,
+    /// «адрес:порт»
+    pub addr: String,
+}
+
+impl Favorite {
+    pub fn of(p: &crate::link::Profile) -> Self {
+        Self { sub: p.sub.clone().unwrap_or_default(), name: p.name.clone(), addr: format!("{}:{}", p.server, p.port) }
+    }
+
+    /// Это тот же сервер? Имя или адрес совпали (и источник тот же).
+    pub fn matches(&self, p: &crate::link::Profile) -> bool {
+        p.sub.as_deref().unwrap_or("") == self.sub && (p.name == self.name || format!("{}:{}", p.server, p.port) == self.addr)
+    }
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { lan_bypass: true, selected: None, connect_on_start: false, subscriptions: Vec::new(), tray_hint_shown: false, close_action: 0, custom_dns: false, dns_address: String::new(), zapret_enabled: false, zapret_strategy: "general".into(), zapret_results: Default::default(), zapret_autostart: true }
+        Self { lan_bypass: true, selected: None, connect_on_start: false, subscriptions: Vec::new(), tray_hint_shown: false, close_action: 0, custom_dns: false, dns_address: String::new(), zapret_enabled: false, zapret_strategy: "general".into(), zapret_results: Default::default(), zapret_autostart: true, hwid: String::new(), favorites: Vec::new() }
     }
 }
 

@@ -22,6 +22,10 @@ use std::time::{Duration, Instant};
 pub const FOLDER: &str = "zapret";
 /// Наш файл исключений (адрес VPN-сервера) — пользовательские файлы zapret не трогаем.
 pub const EXCLUDE_FILE: &str = "ipset-exclude-foxray.txt";
+/// Свой список Foxray «Через zapret»: домены и IP-адреса. Подключается к стратегии рядом
+/// с list-general-user.txt и ipset-all.txt — файлы сборки не трогаем.
+pub const USER_HOSTLIST: &str = "list-foxray.txt";
+pub const USER_IPSET: &str = "ipset-foxray.txt";
 const REPO_RAW: &str = "https://raw.githubusercontent.com/Flowseal/zapret-discord-youtube/main";
 const REPO_DL: &str = "https://github.com/Flowseal/zapret-discord-youtube/releases/download";
 
@@ -150,9 +154,19 @@ pub fn write_exclude(dir: &Path, ips: &[IpAddr]) -> PathBuf {
     p
 }
 
-/// Аргументы winws из .bat-стратегии.
-/// exclude — наш файл исключений: добавляется в каждый профиль (между --new).
-pub fn parse_bat(text: &str, dir: &Path, exclude: Option<&Path>) -> Result<Vec<String>, String> {
+/// Свои файлы Foxray для стратегии: исключения (адрес VPN-сервера) и список «Через zapret».
+#[derive(Default, Clone, Copy)]
+pub struct Extra<'a> {
+    /// Добавляется в каждый профиль (между --new) как --ipset-exclude.
+    pub exclude: Option<&'a Path>,
+    /// Добавляется к каждому --hostlist=…list-general-user.txt.
+    pub hostlist: Option<&'a Path>,
+    /// Добавляется к каждому --ipset=…ipset-all.txt.
+    pub ipset: Option<&'a Path>,
+}
+
+/// Аргументы winws из .bat-стратегии со своими файлами Foxray (см. Extra).
+pub fn parse_bat(text: &str, dir: &Path, extra: Extra) -> Result<Vec<String>, String> {
     // Склеиваем строки, разорванные «^» в конце.
     let mut joined = String::new();
     for line in text.lines() {
@@ -194,7 +208,25 @@ pub fn parse_bat(text: &str, dir: &Path, exclude: Option<&Path>) -> Result<Vec<S
     if args.is_empty() {
         return Err("пустая строка запуска winws".into());
     }
-    if let Some(ex) = exclude {
+    // Свой список — следом за пользовательским списком сборки: те же профили, те же настройки.
+    // ipset-all.txt может быть пустым (режим «any» — все адреса), тогда свой ipset не добавляем:
+    // он бы сузил профиль до наших адресов.
+    let ipset_all_any = ipset_empty(&dir.join("lists").join("ipset-all.txt"));
+    if extra.hostlist.is_some() || extra.ipset.is_some() {
+        let mut out = Vec::with_capacity(args.len() + 8);
+        for a in args.drain(..) {
+            let host = a.starts_with("--hostlist=") && a.ends_with("list-general-user.txt");
+            let ip = a.starts_with("--ipset=") && a.ends_with("ipset-all.txt");
+            out.push(a);
+            match (host, ip, extra.hostlist, extra.ipset) {
+                (true, _, Some(h), _) => out.push(format!("--hostlist={}", h.display())),
+                (_, true, _, Some(i)) if !ipset_all_any => out.push(format!("--ipset={}", i.display())),
+                _ => {}
+            }
+        }
+        args = out;
+    }
+    if let Some(ex) = extra.exclude {
         let opt = format!("--ipset-exclude={}", ex.display());
         let mut out = Vec::with_capacity(args.len() + 16);
         for a in args.drain(..) {
@@ -207,6 +239,17 @@ pub fn parse_bat(text: &str, dir: &Path, exclude: Option<&Path>) -> Result<Vec<S
         args = out;
     }
     Ok(args)
+}
+
+/// Пустой ipset (нет ни одного адреса) — zapret считает, что подходят все адреса.
+fn ipset_empty(p: &Path) -> bool {
+    match std::fs::read_to_string(p) {
+        Ok(t) => !t.lines().any(|l| {
+            let l = l.trim();
+            !l.is_empty() && !l.starts_with('#')
+        }),
+        Err(_) => false, // нет файла — профиль и так не запустится, не наше дело
+    }
 }
 
 /// Разбор как в cmd: пробелы делят, кавычки склеивают и убираются,
@@ -268,6 +311,97 @@ pub fn domains(dir: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+// ---------------------------------------------------------------- список «Через zapret»
+
+/// Что из списка «Через zapret» пошло в файлы zapret.
+#[derive(Debug, Default, PartialEq)]
+pub struct UserLists {
+    /// Для --hostlist: «домен» (с поддоменами) или «^домен» (только он).
+    pub hosts: Vec<String>,
+    /// Для --ipset: адреса и подсети.
+    pub ips: Vec<String>,
+}
+
+/// Записи списка → домены и адреса для zapret. Наборы (geosite:/geoip:) раскрываются
+/// из скачанных файлов .srs (sing-box rule-set decompile, результат кешируется рядом).
+/// Программы и «keyword:» zapret не понимает — их пропускаем.
+pub fn user_lists(entries: &[String], sets_dir: &Path, singbox: Option<&Path>) -> UserLists {
+    use crate::rules::{parse_entry, Entry};
+    let mut out = UserLists::default();
+    fn push(v: &mut Vec<String>, x: String) {
+        if !x.is_empty() && !v.contains(&x) {
+            v.push(x);
+        }
+    }
+    for e in entries {
+        match parse_entry(e) {
+            Ok(Entry::DomainSuffix(d)) => push(&mut out.hosts, d),
+            Ok(Entry::Domain(d)) => push(&mut out.hosts, format!("^{d}")),
+            Ok(Entry::Cidr(c)) => push(&mut out.ips, c),
+            Ok(Entry::Geosite(t) | Entry::Geoip(t)) => {
+                let Some(sb) = singbox else { continue };
+                if let Ok(set) = set_contents(&crate::geo::set_path(sets_dir, &t), sb) {
+                    for d in set.hosts {
+                        push(&mut out.hosts, d);
+                    }
+                    for c in set.ips {
+                        push(&mut out.ips, c);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Содержимое набора .srs: домены и адреса (слова и регулярные выражения zapret не понимает).
+pub fn set_contents(srs: &Path, singbox: &Path) -> Result<UserLists, String> {
+    let json = srs.with_extension("json");
+    let fresh = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    if fresh(&json).is_none() || fresh(&json) < fresh(srs) {
+        let mut cmd = Command::new(singbox);
+        cmd.arg("rule-set").arg("decompile").arg("--output").arg(&json).arg(srs);
+        crate::sys::hide_window(&mut cmd);
+        let out = cmd.output().map_err(|e| format!("sing-box: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        }
+    }
+    let text = std::fs::read_to_string(&json).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let mut out = UserLists::default();
+    // В JSON sing-box поле — строка или массив строк.
+    let strings = |x: &serde_json::Value| -> Vec<String> {
+        match x {
+            serde_json::Value::String(s) => vec![s.clone()],
+            serde_json::Value::Array(a) => a.iter().filter_map(|s| s.as_str().map(String::from)).collect(),
+            _ => Vec::new(),
+        }
+    };
+    for r in v["rules"].as_array().into_iter().flatten() {
+        for d in strings(&r["domain_suffix"]) {
+            out.hosts.push(d.trim_start_matches('.').to_ascii_lowercase());
+        }
+        for d in strings(&r["domain"]) {
+            out.hosts.push(format!("^{}", d.to_ascii_lowercase()));
+        }
+        out.ips.extend(strings(&r["ip_cidr"]));
+    }
+    Ok(out)
+}
+
+/// Записать свои файлы zapret. Пустой список winws не любит — тогда заглушка
+/// (как в файлах сборки), которая ни с чем не совпадёт.
+pub fn write_user_lists(dir: &Path, lists: &UserLists) -> (PathBuf, PathBuf) {
+    let host = dir.join("lists").join(USER_HOSTLIST);
+    let ip = dir.join("lists").join(USER_IPSET);
+    let text = |v: &[String], stub: &str| if v.is_empty() { format!("{stub}\n") } else { v.join("\n") + "\n" };
+    let _ = std::fs::write(&host, text(&lists.hosts, "domain.example.abc"));
+    let _ = std::fs::write(&ip, text(&lists.ips, "203.0.113.113/32"));
+    (host, ip)
 }
 
 // ---------------------------------------------------------------- запуск winws
@@ -660,7 +794,7 @@ mod tests {
         let bat = "@echo off\r\nset \"BIN=%~dp0bin\\\"\r\nstart \"zapret: %~n0\" /min \"%BIN%winws.exe\" --wf-tcp=80,443,%GameFilterTCP% ^\r\n--filter-udp=443 --hostlist=\"%LISTS%list-general.txt\" --new ^\r\n--filter-tcp=443 --dpi-desync=fake\r\n";
         let dir = Path::new("Z");
         let ex = Path::new("Z/ex.txt");
-        let a = parse_bat(bat, dir, Some(ex)).unwrap();
+        let a = parse_bat(bat, dir, Extra { exclude: Some(ex), ..Default::default() }).unwrap();
         let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(a[0], "--wf-tcp=80,443,12");
         assert_eq!(a[2], format!("--hostlist=Z{sep}lists{sep}list-general.txt"));
@@ -668,5 +802,38 @@ mod tests {
         assert_eq!(a[4], "--new");
         assert_eq!(a.last().unwrap(), "--ipset-exclude=Z/ex.txt");
         assert_eq!(a.iter().filter(|x| x.starts_with("--ipset-exclude")).count(), 2);
+    }
+
+    #[test]
+    fn user_lists_follow_build_lists() {
+        let dir = std::env::temp_dir().join("foxray-zapret-user");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("lists")).unwrap();
+        let bat = "\"%BIN%winws.exe\" --filter-tcp=443 --hostlist=\"%LISTS%list-general.txt\" --hostlist=\"%LISTS%list-general-user.txt\" --new --filter-tcp=80 --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake\n";
+        let (h, i) = write_user_lists(&dir, &UserLists { hosts: vec!["rutracker.org".into()], ips: vec![] });
+        assert_eq!(std::fs::read_to_string(&h).unwrap(), "rutracker.org\n");
+        assert_eq!(std::fs::read_to_string(&i).unwrap(), "203.0.113.113/32\n");
+        let extra = Extra { exclude: None, hostlist: Some(&h), ipset: Some(&i) };
+        // ipset-all.txt — заглушка (режим «none»): свой ipset добавляется
+        std::fs::write(dir.join("lists").join("ipset-all.txt"), "203.0.113.113/32\n").unwrap();
+        let a = parse_bat(bat, &dir, extra).unwrap();
+        let pos = a.iter().position(|x| x.ends_with("list-general-user.txt")).unwrap();
+        assert_eq!(a[pos + 1], format!("--hostlist={}", h.display()));
+        let pos = a.iter().position(|x| x.ends_with("ipset-all.txt")).unwrap();
+        assert_eq!(a[pos + 1], format!("--ipset={}", i.display()));
+        // пустой ipset-all.txt (режим «any» — все адреса): свой не добавляем, иначе сузит профиль
+        std::fs::write(dir.join("lists").join("ipset-all.txt"), "").unwrap();
+        let a = parse_bat(bat, &dir, extra).unwrap();
+        assert!(!a.iter().any(|x| x.contains(USER_IPSET)));
+        assert_eq!(a.iter().filter(|x| x.contains(USER_HOSTLIST)).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_entries() {
+        let e: Vec<String> = ["rutracker.org", "full:x.com", "1.2.3.4", "keyword:goo", "steam.exe", "*.ya.ru"].map(String::from).to_vec();
+        let u = user_lists(&e, Path::new("."), None);
+        assert_eq!(u.hosts, vec!["rutracker.org", "^x.com", "ya.ru"]);
+        assert_eq!(u.ips, vec!["1.2.3.4/32"]);
     }
 }
