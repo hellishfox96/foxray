@@ -2,11 +2,14 @@
 #   1. Поменять version в Cargo.toml (например, 0.7.0), дописать раздел «## 0.7.0» в CHANGELOG.md, закоммитить.
 #   2. git tag v0.7.0 && git push && git push --tags
 # Описание выпуска — пункты раздела этой версии из CHANGELOG.md (их же Foxray показывает в «Что нового»).
+# Каждый push в main тоже собирает (без выпуска): проверка, что всё собирается, и кэш зависимостей
+# для следующего выпуска (кэш метки другим меткам не виден, а кэш main — виден).
 # Foxray у всех увидит новую версию в «Настройки → Обновление».
 name: release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
 
 permissions:
@@ -21,7 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Версия метки = версии в Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}".TrimStart('v')
@@ -29,6 +34,7 @@ jobs:
           if ($tag -ne $ver) { throw "Метка v$tag, а в Cargo.toml $ver" }
       - run: cargo build --release --bin foxray-gui
       - name: Архив
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $v = "${{ github.ref_name }}".TrimStart('v')
@@ -41,13 +47,15 @@ jobs:
           Copy-Item "dist-files/Прочти меня.txt" dist/Foxray/
           Compress-Archive -Path dist/Foxray -DestinationPath "dist/Foxray-$v-windows-x64.zip"
       - name: Что нового (из CHANGELOG.md)
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           v="${GITHUB_REF_NAME#v}"
           awk -v v="$v" '{ sub(/\r$/, "") } /^## /{ p = ($2 == v); next } p' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || echo "- Подробности — в истории изменений на GitHub" > notes.md
           cat notes.md
-      - uses: softprops/action-gh-release@v2
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
           body_path: notes.md
@@ -58,14 +66,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Готовый cargo-zigbuild вместо сборки из исходников (минута-две каждый раз).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
       - name: Библиотеки
         run: |
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libfontconfig1-dev
           pip install ziglang
-          cargo install cargo-zigbuild --locked
       - run: PKG_CONFIG_ALLOW_CROSS=1 cargo zigbuild --release --bin foxray-gui --target x86_64-unknown-linux-gnu.2.31
       - name: Архив
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           v="${GITHUB_REF_NAME#v}"
           curl -sSLf -o sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX}/sing-box-${SINGBOX}-linux-amd64.tar.gz"
@@ -79,13 +92,15 @@ jobs:
           chmod +x "$out/foxray" "$out/sing-box" "$out/install-menu.sh"
           tar -czf "dist/Foxray-${v}-linux-x86_64.tar.gz" -C dist foxray
       - name: Что нового (из CHANGELOG.md)
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           v="${GITHUB_REF_NAME#v}"
           awk -v v="$v" '{ sub(/\r$/, "") } /^## /{ p = ($2 == v); next } p' CHANGELOG.md > notes.md
           grep -q '[^[:space:]]' notes.md || echo "- Подробности — в истории изменений на GitHub" > notes.md
           cat notes.md
-      - uses: softprops/action-gh-release@v2
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz
           body_path: notes.md
