@@ -1,0 +1,30 @@
+# Сборка
+/target/
+/target-zig/
+/dist/
+
+# Личные данные — НЕ выкладывать: ключи VPN-серверов, подписки, настройки, правила
+profiles.json
+settings.json
+rules.json
+config.json
+links.txt
+sing-box.pid
+
+# Скачиваемое программой
+/rulesets/
+/zapret/
+/zapret.new/
+/zapret.old/
+
+# Бинарники sing-box (в выпуск их кладёт сборка на GitHub)
+sing-box.exe
+/sing-box
+*.dll
+*.old
+*.new
+
+# Мусор
+*.pdb
+Thumbs.db
+.DS_Store

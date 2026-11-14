@@ -1,0 +1,2572 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+
+// =====================================================================
+// Данные из Rust
+// =====================================================================
+
+export struct Row {
+    kind: int,          // 0 — заголовок группы, 1 — сервер
+    title: string,
+    sub: string,
+    badge: string,
+    ping: string,
+    ping-state: int,    // 0 нет, 1 быстро, 2 медленно, 3 недоступен, 4 проверка
+    selected: bool,
+    index: int,         // номер сервера
+    key: string,        // ключ группы
+    collapsed: bool,
+    count: int,
+    refreshable: bool,
+}
+
+export struct RuleCard {
+    name: string,
+    builtin: bool,
+    action: int,        // 0 VPN, 1 напрямую, 2 блок
+    enabled: bool,
+    summary: string,
+}
+
+export struct EntryItem {
+    text: string,
+    kind: string,
+    icon: int,          // 0 программа, 1 домен, 2 сеть, 3 ошибка, 4 набор
+}
+
+export struct FieldItem {
+    key: string,
+    label: string,
+    value: string,
+    hint: string,
+    kind: int,          // 0 текст, 1 переключатель, 2 выбор
+    labels: [string],
+    choice: int,
+}
+
+export struct SetRow {
+    kind: int,          // 0 — заголовок группы, 1 — набор
+    title: string,
+    sub: string,
+    added: bool,
+    index: int,         // номер в каталоге
+}
+
+export struct SubItem {
+    name: string,
+    info: string,
+}
+
+// =====================================================================
+// Стиль
+// =====================================================================
+
+// Стратегия zapret в списке. state: 0 — не проверена, 1 — хорошо, 2 — частично, 3 — не работает, 4 — проверяется
+// Строка «Куда идёт трафик». kind: 0 VPN, 1 zapret, 2 напрямую, 3 блок, 4 не действует
+// target: 0 — сменить режим, 1 — страница zapret, 2 — вкладка «Правила»
+export struct RouteRow {
+    title: string,
+    sub: string,
+    chip: string,
+    kind: int,
+    target: int,
+}
+
+// Строка страницы «Соединения». kind: 0 VPN, 1 zapret, 2 напрямую, 4 прочее
+export struct ConnRow {
+    id: string,
+    host: string,
+    sub: string,
+    route: string,
+    traffic: string,
+    kind: int,
+    // Заголовок группы (программы) — host содержит «CLAUDE.EXE · 4».
+    header: bool,
+    // Первая / последняя строка в группе — для скруглений карточки.
+    first: bool,
+    last: bool,
+}
+
+export struct ZapretRow {
+    title: string,
+    result: string,
+    selected: bool,
+    state: int,
+}
+
+export global Theme {
+    out property <color> bg: #101216;
+    out property <color> panel: #16191f;
+    out property <color> card: #1c2028;
+    out property <color> card2: #232833;
+    out property <color> line: #2a303b;
+    out property <color> text: #eceef2;
+    out property <color> muted: #8b93a1;
+    out property <color> dim: #5d6573;
+    out property <color> accent: #ff7a2f;
+    out property <color> ok: #2fbf71;
+    out property <color> warn: #e7b43c;
+    out property <color> bad: #ec6a5e;
+    out property <color> vpn: #5b8cff;
+    out property <color> zap: #a970ff;
+}
+
+global Icons {
+    out property <string> power: "M12 3 L12 12 M17.7 6.3 A8 8 0 1 1 6.3 6.3";
+    out property <string> servers: "M6 4 L18 4 A2 2 0 0 1 20 6 L20 8 A2 2 0 0 1 18 10 L6 10 A2 2 0 0 1 4 8 L4 6 A2 2 0 0 1 6 4 Z M6 14 L18 14 A2 2 0 0 1 20 16 L20 18 A2 2 0 0 1 18 20 L6 20 A2 2 0 0 1 4 18 L4 16 A2 2 0 0 1 6 14 Z";
+    out property <string> rules: "M4 7 L14 7 M4 12 L20 12 M4 17 L11 17";
+    out property <string> gear: "M12 9 A3 3 0 1 0 12 15 A3 3 0 1 0 12 9 Z M12 2 L12 5 M12 19 L12 22 M4.9 4.9 L7 7 M17 17 L19.1 19.1 M2 12 L5 12 M19 12 L22 12 M4.9 19.1 L7 17 M17 7 L19.1 4.9";
+    out property <string> plus: "M12 5 L12 19 M5 12 L19 12";
+    out property <string> bolt: "M13 2 L4 14 L11 14 L10 22 L19 10 L12 10 Z";
+    out property <string> search: "M11 4 A7 7 0 1 0 11 18 A7 7 0 1 0 11 4 Z M20 20 L16.5 16.5";
+    out property <string> right: "M9 6 L15 12 L9 18";
+    out property <string> left: "M15 6 L9 12 L15 18";
+    out property <string> down: "M6 9 L12 15 L18 9";
+    out property <string> refresh: "M20 12 A8 8 0 1 1 17.7 6.3 M20 4 L20 9 L15 9";
+    out property <string> close: "M6 6 L18 18 M18 6 L6 18";
+    out property <string> edit: "M4 20 L8 20 L19 9 L15 5 L4 16 Z M13 7 L17 11";
+    out property <string> trash: "M4 7 L20 7 M9 7 L9 4 L15 4 L15 7 M6 7 L7 20 L17 20 L18 7";
+    out property <string> copy: "M9 9 L20 9 L20 20 L9 20 Z M15 9 L15 4 L4 4 L4 15 L9 15";
+    out property <string> more: "M11.4 5 A0.6 0.6 0 1 0 12.6 5 A0.6 0.6 0 1 0 11.4 5 Z M11.4 12 A0.6 0.6 0 1 0 12.6 12 A0.6 0.6 0 1 0 11.4 12 Z M11.4 19 A0.6 0.6 0 1 0 12.6 19 A0.6 0.6 0 1 0 11.4 19 Z";
+    out property <string> app: "M4 5 L20 5 L20 19 L4 19 Z M4 9 L20 9";
+    out property <string> layers: "M12 3.5 L20.5 8 L12 12.5 L3.5 8 Z M3.5 12 L12 16.5 L20.5 12 M3.5 16 L12 20.5 L20.5 16";
+    out property <string> check: "M5 12.5 L10 17.5 L19 7";
+    out property <string> info: "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z M12 11 L12 16.5 M11.6 7.6 A0.4 0.4 0 1 0 12.4 7.6 A0.4 0.4 0 1 0 11.6 7.6 Z";
+    out property <string> globe: "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z M3 12 L21 12 M12 3 C16 7 16 17 12 21 M12 3 C8 7 8 17 12 21";
+    out property <string> net: "M3 15 L9 15 L9 20 L3 20 Z M15 15 L21 15 L21 20 L15 20 Z M9 4 L15 4 L15 9 L9 9 Z M12 9 L12 12 M6 15 L6 12 L18 12 L18 15";
+    out property <string> alert: "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z M12 7 L12 13 M11.5 17 A0.5 0.5 0 1 0 12.5 17 A0.5 0.5 0 1 0 11.5 17 Z";
+    out property <string> clip: "M9 3 L15 3 L15 6 L9 6 Z M8 4.5 L5 4.5 L5 21 L19 21 L19 4.5 L16 4.5";
+    out property <string> log: "M5 4 L19 4 L19 20 L5 20 Z M8 9 L16 9 M8 13 L16 13 M8 17 L13 17";
+    out property <string> folder: "M3 6 L9 6 L11 8 L21 8 L21 19 L3 19 Z";
+    out property <string> minimize: "M6 17.5 L18 17.5";
+    out property <string> dash: "M7.5 12 L16.5 12";
+    out property <string> cross-small: "M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5"; // по нижнему краю крестика, как в Windows
+    out property <string> file: "M6 3 L14 3 L19 8 L19 21 L6 21 Z M14 3 L14 8 L19 8";
+}
+
+// =====================================================================
+// Мелкие компоненты
+// =====================================================================
+
+/// Всплывающая подсказка: одна на всё окно, рисуется поверх (см. конец AppWindow).
+global Tip {
+    in-out property <string> text;
+    in-out property <length> x;
+    in-out property <length> y;
+}
+
+component Icon inherits Path {
+    in property <color> tint: Theme.muted;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    stroke: tint;
+    stroke-width: 2px;
+    fill: transparent;
+}
+
+component IconButton inherits Rectangle {
+    in property <string> icon;
+    in property <bool> accent: false;
+    in property <color> tint: Theme.muted;
+    in property <color> hover-tint: Theme.text;
+    in property <length> size: 32px;
+    callback clicked();
+    width: size;
+    height: size;
+    border-radius: 9px;
+    background: accent ? (ta.has-hover ? #ff8c4a : Theme.accent) : (ta.has-hover ? Theme.card2 : Theme.card);
+    animate background { duration: 120ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        width: 16px;
+        height: 16px;
+        commands: root.icon;
+        tint: root.accent ? white : (ta.has-hover ? root.hover-tint : root.tint);
+    }
+}
+
+// Иконка без фона (в строках)
+component GhostIcon inherits Rectangle {
+    in property <string> icon;
+    in property <color> tint: Theme.dim;
+    in property <color> hover-tint: Theme.text;
+    callback clicked();
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: ta.has-hover ? #ffffff10 : transparent;
+    animate background { duration: 120ms; }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Icon {
+        width: 15px;
+        height: 15px;
+        commands: root.icon;
+        tint: ta.has-hover ? root.hover-tint : root.tint;
+    }
+}
+
+component Switch inherits Rectangle {
+    in property <bool> on;
+    in property <color> on-color: Theme.accent;
+    in property <length> h: 20px;
+    callback toggled(bool);
+    width: h * 1.75;
+    height: h;
+    border-radius: h / 2;
+    background: on ? on-color : #3a414d;
+    animate background { duration: 150ms; }
+    Rectangle {
+        width: root.h - 4px;
+        height: root.h - 4px;
+        y: 2px;
+        x: root.on ? root.width - self.width - 2px : 2px;
+        border-radius: self.height / 2;
+        background: white;
+        animate x { duration: 150ms; easing: ease-out; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggled(!root.on); }
+    }
+}
+
+component Segmented inherits Rectangle {
+    in property <[string]> items;
+    in property <int> current;
+    callback changed(int);
+    height: 34px;
+    border-radius: 10px;
+    background: Theme.card;
+    HorizontalLayout {
+        padding: 3px;
+        for it[i] in root.items: Rectangle {
+            border-radius: 8px;
+            background: i == root.current ? Theme.card2 : (sta.has-hover ? #ffffff08 : transparent);
+            animate background { duration: 120ms; }
+            Text {
+                text: it;
+                color: i == root.current ? Theme.text : Theme.muted;
+                font-size: 12.5px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            sta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.changed(i); }
+            }
+        }
+    }
+}
+
+component Section inherits Text {
+    color: Theme.dim;
+    font-size: 11px;
+    letter-spacing: 0.6px;
+}
+
+/// Кружок «i»: наведение (или нажатие) показывает подсказку.
+component InfoDot inherits Rectangle {
+    in property <string> tip;
+    width: 18px;
+    height: 18px;
+    Icon {
+        width: 14px;
+        height: 14px;
+        stroke-width: 1.8px;
+        commands: Icons.info;
+        tint: ita.has-hover || Tip.text == root.tip ? Theme.text : Theme.dim;
+    }
+    ita := TouchArea {
+        mouse-cursor: pointer;
+        changed has-hover => {
+            if self.has-hover {
+                Tip.text = root.tip;
+                Tip.x = root.absolute-position.x + root.width / 2;
+                Tip.y = root.absolute-position.y + root.height;
+            } else if Tip.text == root.tip {
+                Tip.text = "";
+            }
+        }
+        clicked => {
+            if Tip.text == root.tip {
+                Tip.text = "";
+            } else {
+                Tip.text = root.tip;
+                Tip.x = root.absolute-position.x + root.width / 2;
+                Tip.y = root.absolute-position.y + root.height;
+            }
+        }
+    }
+}
+
+/// Заголовок раздела с необязательной подсказкой «i».
+component SectionHead inherits HorizontalLayout {
+    in property <string> text;
+    in property <string> tip;
+    spacing: 4px;
+    alignment: start;
+    VerticalLayout {
+        alignment: center;
+        Section { text: root.text; }
+    }
+    if root.tip != "": InfoDot { tip: root.tip; }
+}
+
+/// Маленькая плашка с текстом (итоги сессии и т. п.).
+component Chip inherits Rectangle {
+    in property <string> text;
+    in property <length> font-size: 10.5px;
+    height: self.font-size + 8px;
+    width: ct.preferred-width + 14px;
+    border-radius: 6px;
+    background: #ffffff14;
+    ct := Text { text: root.text; font-size: root.font-size; font-weight: 600; color: Theme.text; }
+}
+
+/// Плашка-метка со стрелкой (сервер, стратегия): нажатие открывает выбор.
+/// Подсветка при наведении — только вокруг самой плашки.
+component TagButton inherits Rectangle {
+    in property <string> text;
+    /// Без плашки — просто текст (например, «Выбрать сервер»).
+    in property <bool> plain: false;
+    callback clicked();
+    height: 28px;
+    width: hl.preferred-width;
+    border-radius: 8px;
+    background: tba.has-hover ? #ffffff10 : transparent;
+    animate background { duration: 120ms; }
+    tba := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    hl := HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 2px;
+        spacing: 2px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 20px;
+                width: min(tt.preferred-width + (root.plain ? 0px : 14px), 120px);
+                border-radius: 6px;
+                background: root.plain ? transparent : #ffffff14;
+                tt := Text {
+                    width: min(self.preferred-width, parent.width - (root.plain ? 0px : 14px));
+                    text: root.text;
+                    font-size: root.plain ? 12.5px : 11.5px;
+                    font-weight: 600;
+                    color: Theme.text;
+                    overflow: elide;
+                }
+            }
+        }
+        VerticalLayout { alignment: center; Icon { width: 13px; height: 13px; commands: Icons.right; tint: tba.has-hover ? Theme.text : Theme.muted; } }
+    }
+}
+
+/// Кнопка «+ Добавить…» под списком — в цвет Foxray.
+component AddButton inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 42px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: aba.has-hover ? Theme.accent : #ff7a2f66;
+    background: aba.pressed ? #ff7a2f33 : aba.has-hover ? #ff7a2f22 : #ff7a2f12;
+    animate background, border-color { duration: 120ms; }
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        VerticalLayout { alignment: center; Icon { width: 14px; height: 14px; commands: Icons.plus; tint: Theme.accent; stroke-width: 2.2px; } }
+        Text { text: root.text; color: Theme.accent; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+    }
+    aba := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+/// Круглый переключатель выбора (как radio).
+component Radio inherits Rectangle {
+    in property <bool> on;
+    width: 18px;
+    height: 18px;
+    border-radius: 9px;
+    border-width: 2px;
+    border-color: on ? Theme.accent : #4a515e;
+    background: transparent;
+    animate border-color { duration: 120ms; }
+    Rectangle {
+        width: root.on ? 8px : 0px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: Theme.accent;
+        animate width { duration: 120ms; easing: ease-out; }
+    }
+}
+
+/// Ctrl+C/V/X/A в русской раскладке: Slint узнаёт сочетания по букве ("c"),
+/// а в ЙЦУКЕН та же клавиша даёт "с" — без этого копирование не работает.
+global RuKeys {
+    /// 0 — не наше, 1 копировать, 2 выделить всё, 3 вставить, 4 вырезать.
+    public pure function action(e: KeyEvent) -> int {
+        if (!e.modifiers.control || e.modifiers.alt) { return 0; }
+        if (e.text == "с" || e.text == "С") { return 1; }
+        if (e.text == "ф" || e.text == "Ф") { return 2; }
+        if (e.text == "м" || e.text == "М") { return 3; }
+        if (e.text == "ч" || e.text == "Ч") { return 4; }
+        return 0;
+    }
+}
+
+/// Однострочное поле ввода в стиле приложения (вместо системного поля из std-widgets).
+/// inset — поле внутри карточки: фон темнее карточки.
+component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <bool> inset: false;
+    callback edited(string);
+    callback accepted(string);
+    forward-focus: ti;
+    public function select-all() { ti.select-all(); }
+    height: 36px;
+    min-width: 60px;
+    horizontal-stretch: 1;
+    border-radius: 10px;
+    background: root.inset ? Theme.bg : Theme.card;
+    border-width: 1px;
+    border-color: ti.has-focus ? #ff7a2f99 : fta.has-hover ? #ffffff14 : transparent;
+    animate border-color { duration: 120ms; }
+    fta := TouchArea { mouse-cursor: MouseCursor.text; clicked => { ti.focus(); } }
+    ContextMenuArea {
+        Menu {
+            MenuItem { title: "Вырезать"; activated => { ti.cut(); } }
+            MenuItem { title: "Копировать"; activated => { ti.copy(); } }
+            MenuItem { title: "Вставить"; activated => { ti.paste(); } }
+            MenuItem { title: "Выделить всё"; activated => { ti.select-all(); } }
+        }
+        Rectangle {
+            x: 12px;
+            width: parent.width - 24px;
+            clip: true;
+            if root.text == "" && root.placeholder-text != "": Text {
+                width: 100%;
+                text: root.placeholder-text;
+                color: Theme.dim;
+                font-size: 13px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            FocusScope {
+            capture-key-pressed(e) => {
+                    let a = RuKeys.action(e);
+                    if (a == 1) { ti.copy(); return accept; }
+                    if (a == 2) { ti.select-all(); return accept; }
+                    if (a == 3 && !false) { ti.paste(); return accept; }
+                    if (a == 4 && !false) { ti.cut(); return accept; }
+                    return reject;
+                }
+            ti := TextInput {
+                text <=> root.text;
+                single-line: true;
+                color: Theme.text;
+                font-size: 13px;
+                vertical-alignment: center;
+                selection-background-color: #ff7a2f66;
+                selection-foreground-color: Theme.text;
+                edited => { root.edited(self.text); }
+                accepted => { root.accepted(self.text); }
+            }
+            }
+        }
+    }
+}
+
+/// Многострочное поле (вставка ссылок, журнал) в том же стиле.
+component Area inherits Rectangle {
+    in-out property <string> text;
+    in property <bool> read-only: false;
+    in property <length> font-size: 12px;
+    forward-focus: ti;
+    border-radius: 12px;
+    background: Theme.card;
+    border-width: 1px;
+    border-color: ti.has-focus && !root.read-only ? #ff7a2f99 : transparent;
+    animate border-color { duration: 120ms; }
+    TouchArea { mouse-cursor: MouseCursor.text; clicked => { ti.focus(); } }
+    ContextMenuArea {
+        Menu {
+            if !root.read-only: MenuItem { title: "Вырезать"; activated => { ti.cut(); } }
+            MenuItem { title: "Копировать"; activated => { ti.copy(); } }
+            if !root.read-only: MenuItem { title: "Вставить"; activated => { ti.paste(); } }
+            MenuItem { title: "Выделить всё"; activated => { ti.select-all(); } }
+        }
+        fl := Flickable {
+            x: 12px;
+            y: 10px;
+            width: parent.width - 24px;
+            height: parent.height - 20px;
+            content-height: max(ti.preferred-height, self.height);
+            // мышью — выделять текст, а не тащить страницу; прокрутка — колесом
+            mouse-drag-pan-enabled: false;
+            FocusScope {
+            height: max(ti.preferred-height, fl.height);
+            capture-key-pressed(e) => {
+                    let a = RuKeys.action(e);
+                    if (a == 1) { ti.copy(); return accept; }
+                    if (a == 2) { ti.select-all(); return accept; }
+                    if (a == 3 && !root.read-only) { ti.paste(); return accept; }
+                    if (a == 4 && !root.read-only) { ti.cut(); return accept; }
+                    return reject;
+                }
+            ti := TextInput {
+                width: fl.width;
+                text <=> root.text;
+                read-only: root.read-only;
+                single-line: false;
+                wrap: word-wrap;
+                color: Theme.text;
+                font-size: root.font-size;
+                selection-background-color: #ff7a2f66;
+                selection-foreground-color: Theme.text;
+            }
+            }
+        }
+    }
+}
+
+/// Раздел настроек: заголовок, карточка и подсказка стоят плотно друг к другу.
+component Group inherits VerticalLayout {
+    spacing: 6px;
+}
+
+/// Подсказка под карточкой — везде одинаковая, выровнена по заголовку раздела.
+component Hint inherits HorizontalLayout {
+    in property <string> text;
+    in property <bool> bad: false;
+    Text {
+        text: root.text;
+        color: root.bad ? Theme.bad : Theme.dim;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+}
+
+/// Карточка скорости: подпись слева вверху, скорость со стрелкой справа, график,
+/// внизу «скачано» (по нижней границе плашки) и плашка с объёмом за сессию.
+component SpeedCard inherits Rectangle {
+    in property <string> label;
+    in property <string> arrow;
+    in property <color> tint;
+    in property <string> num;
+    in property <string> unit;
+    in property <string> path;
+    in property <string> word;
+    in property <string> total;
+    border-radius: 12px;
+    background: Theme.card;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    preferred-width: 0px;
+    VerticalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            Text { text: root.label; color: Theme.muted; font-size: 11px; vertical-alignment: top; horizontal-stretch: 1; }
+            Text { text: root.arrow; color: root.tint; font-size: 14px; font-weight: 700; vertical-alignment: bottom; }
+            Text { text: root.num; color: Theme.text; font-size: 19px; font-weight: 700; vertical-alignment: bottom; }
+            Text { text: root.unit; color: Theme.muted; font-size: 11px; vertical-alignment: bottom; }
+        }
+        Path {
+            height: 28px;
+            viewbox-width: 100;
+            viewbox-height: 28;
+            fit: fill;
+            commands: root.path;
+            stroke: root.tint;
+            stroke-width: 1.6px;
+            fill: transparent;
+        }
+        HorizontalLayout {
+            height: 20px;
+            Text { text: root.word; color: Theme.muted; font-size: 11px; vertical-alignment: bottom; horizontal-stretch: 1; }
+            if root.total != "": Rectangle {
+                height: 20px;
+                width: tt.preferred-width + 14px;
+                border-radius: 6px;
+                background: #ffffff14;
+                tt := Text { text: root.total; font-size: 11px; font-weight: 600; color: Theme.text; }
+            }
+        }
+    }
+}
+
+/// Скруглённые углы для градиентного фона. Программная отрисовка не скругляет
+/// Rectangle с градиентом (и не заливает градиентом Path), поэтому градиент рисуем
+/// прямоугольником, а углы «срезаем» масками цвета фона страницы.
+component CornerMasks inherits Rectangle {
+    in property <float> r: 14;
+    in property <color> bg: Theme.bg;
+    // ↖
+    Path { x: 0; y: 0; width: root.r * 1px; height: root.r * 1px; viewbox-width: root.r; viewbox-height: root.r; fill: root.bg; stroke-width: 0px;
+        commands: "M 0 0 L " + root.r + " 0 A " + root.r + " " + root.r + " 0 0 0 0 " + root.r + " Z"; }
+    // ↗
+    Path { x: root.width - root.r * 1px; y: 0; width: root.r * 1px; height: root.r * 1px; viewbox-width: root.r; viewbox-height: root.r; fill: root.bg; stroke-width: 0px;
+        commands: "M 0 0 L " + root.r + " 0 L " + root.r + " " + root.r + " A " + root.r + " " + root.r + " 0 0 0 0 0 Z"; }
+    // ↙
+    Path { x: 0; y: root.height - root.r * 1px; width: root.r * 1px; height: root.r * 1px; viewbox-width: root.r; viewbox-height: root.r; fill: root.bg; stroke-width: 0px;
+        commands: "M 0 0 A " + root.r + " " + root.r + " 0 0 0 " + root.r + " " + root.r + " L 0 " + root.r + " Z"; }
+    // ↘
+    Path { x: root.width - root.r * 1px; y: root.height - root.r * 1px; width: root.r * 1px; height: root.r * 1px; viewbox-width: root.r; viewbox-height: root.r; fill: root.bg; stroke-width: 0px;
+        commands: "M " + root.r + " 0 L " + root.r + " " + root.r + " L 0 " + root.r + " A " + root.r + " " + root.r + " 0 0 0 " + root.r + " 0 Z"; }
+}
+
+component Card inherits Rectangle {
+    border-radius: 12px;
+    background: Theme.card;
+}
+
+component Button2 inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> primary: false;
+    /// Кнопка лежит на карточке — фон светлее, иначе сливается.
+    in property <bool> raised: false;
+    callback clicked();
+    height: raised ? 30px : 36px;
+    border-radius: raised ? 8px : 10px;
+    background: primary ? (bta.has-hover ? #ff8c4a : Theme.accent)
+        : raised ? (bta.has-hover ? #323946 : Theme.card2)
+        : (bta.has-hover ? Theme.card2 : Theme.card);
+    animate background { duration: 120ms; }
+    min-width: hl.min-width;
+    hl := HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 6px;
+        alignment: center;
+        if root.icon != "": VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 14px;
+                height: 14px;
+                commands: root.icon;
+                tint: root.primary ? white : Theme.text;
+            }
+        }
+        Text {
+            text: root.text;
+            color: root.primary ? white : Theme.text;
+            font-size: 13px;
+            font-weight: root.primary ? 600 : 400;
+            vertical-alignment: center;
+        }
+    }
+    bta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Строка настроек: заголовок/подзаголовок слева, @children справа
+component SettingRow inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> clickable: false;
+    in property <bool> last: false;
+    callback clicked();
+    min-height: 46px;
+    background: clickable && sra.has-hover ? #ffffff06 : transparent;
+    animate background { duration: 120ms; }
+    sra := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text { text: root.title; color: Theme.text; font-size: 13px; wrap: word-wrap; }
+            if root.subtitle != "": Text { text: root.subtitle; color: Theme.dim; font-size: 11px; overflow: elide; }
+        }
+        HorizontalLayout {
+            alignment: end;
+            spacing: 2px;
+            @children
+        }
+    }
+    if !root.last: Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        x: 12px;
+        width: parent.width - 12px;
+        background: #222731;
+    }
+}
+
+component Back inherits Rectangle {
+    in property <string> text;
+    callback clicked();
+    height: 24px;
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: start;
+        VerticalLayout {
+            alignment: center;
+            Icon { width: 16px; height: 16px; commands: Icons.left; tint: bta.has-hover ? Theme.text : Theme.muted; }
+        }
+        Text { text: root.text; color: bta.has-hover ? Theme.text : Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+    }
+    bta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> icon;
+    in property <bool> danger: false;
+    callback clicked();
+    height: 34px;
+    border-radius: 7px;
+    background: mta.has-hover ? #ffffff10 : transparent;
+    animate background { duration: 120ms; }
+    HorizontalLayout {
+        padding-left: 10px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Icon { width: 15px; height: 15px; commands: root.icon; tint: root.danger ? Theme.bad : Theme.muted; }
+        }
+        Text { text: root.text; color: root.danger ? Theme.bad : Theme.text; font-size: 13px; vertical-alignment: center; }
+    }
+    mta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+/// Кнопка окна — цветной кружок. При наведении темнеет и показывает значок.
+/// Ширина 22px (кружок 14 + по 4 с боков); область двух кнопок с отступом (48px)
+/// передаётся в рамку окна Windows (main.rs → win_frame).
+/// Кружок стоит в 8px от верхнего края — столько же, сколько от правого: ровно по углу окна.
+component CaptionButton inherits Rectangle {
+    in property <string> icon;
+    in property <color> dot: Theme.accent;
+    callback clicked();
+    width: 22px;
+    cta := TouchArea { clicked => { root.clicked(); } }
+    Rectangle {
+        y: 8px;
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: cta.pressed ? root.dot.darker(35%) : cta.has-hover ? root.dot.darker(15%) : root.dot;
+        animate background { duration: 100ms; }
+        Icon {
+            width: 14px;
+            height: 14px;
+            stroke-width: 1.5px;
+            commands: root.icon;
+            tint: #000000a0;
+            opacity: cta.has-hover ? 1 : 0;
+            animate opacity { duration: 100ms; }
+        }
+    }
+}
+
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> active;
+    callback clicked();
+    VerticalLayout {
+        alignment: center;
+        spacing: 3px;
+        HorizontalLayout {
+            alignment: center;
+            Icon {
+                width: 20px;
+                height: 20px;
+                commands: root.icon;
+                tint: root.active ? Theme.accent : (tta.has-hover ? Theme.muted : Theme.dim);
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 10.5px;
+            color: root.active ? Theme.accent : (tta.has-hover ? Theme.muted : Theme.dim);
+            horizontal-alignment: center;
+        }
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: root.active ? 18px : 0px;
+                height: 3px;
+                border-radius: 2px;
+                background: Theme.accent;
+                animate width { duration: 180ms; easing: ease-out; }
+            }
+        }
+    }
+    tta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Экран, который плавно появляется (прозрачность + небольшой сдвиг)
+component Page inherits Rectangle {
+    property <float> t: 0;
+    init => { self.t = 1; }
+    animate t { duration: 200ms; easing: ease-out; }
+    opacity: t;
+    Rectangle {
+        y: (1 - root.t) * 12px;
+        width: parent.width;
+        height: parent.height;
+        @children
+    }
+}
+
+// =====================================================================
+// Строки серверов
+// =====================================================================
+
+component GroupHeader inherits Rectangle {
+    in property <Row> info;
+    callback toggle();
+    callback refresh();
+    HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 2px;
+        spacing: 4px;
+        VerticalLayout {
+            alignment: center;
+            Icon { width: 13px; height: 13px; commands: root.info.collapsed ? Icons.right : Icons.down; tint: Theme.muted; }
+        }
+        Text {
+            text: root.info.title + "  · " + root.info.count;
+            color: Theme.muted;
+            font-size: 11.5px;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        if root.info.refreshable: VerticalLayout {
+            alignment: center;
+            GhostIcon { icon: Icons.refresh; clicked => { root.refresh(); } }
+        }
+    }
+    TouchArea {
+        width: parent.width - 34px;
+        x: 0;
+        mouse-cursor: pointer;
+        clicked => { root.toggle(); }
+    }
+}
+
+component ServerRow inherits Rectangle {
+    in property <Row> info;
+    in property <bool> editing;
+    callback clicked();
+    callback start-edit();
+    callback rename(string);
+    callback copy-link();
+    callback open-editor();
+    callback remove();
+    property <length> menu-x;
+    property <length> menu-y;
+
+    border-radius: 12px;
+    background: root.info.selected ? #2a1d15 : (ta.has-hover ? #20252e : Theme.card);
+    animate background { duration: 120ms; }
+    border-width: 1px;
+    border-color: root.info.selected ? #ff7a2f66 : transparent;
+
+    if root.info.selected: Rectangle {
+        x: -1px;
+        y: 12px;
+        width: 3px;
+        height: parent.height - 24px;
+        border-radius: 2px;
+        background: Theme.accent;
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        double-clicked => { root.start-edit(); }
+        pointer-event(ev) => {
+            if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.up) {
+                root.menu-x = self.mouse-x;
+                root.menu-y = self.mouse-y;
+                menu.show();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            if !root.editing: Text {
+                text: root.info.title;
+                color: Theme.text;
+                font-size: 13.5px;
+                overflow: elide;
+            }
+            if root.editing: Field {
+                text: root.info.title;
+                accepted(t) => { root.rename(t); }
+                init => {
+                    self.focus();
+                    self.select-all();
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    background: Theme.card2;
+                    border-radius: 5px;
+                    width: bt.preferred-width + 12px;
+                    height: 17px;
+                    bt := Text { text: root.info.badge; color: Theme.muted; font-size: 10px; }
+                }
+                Text {
+                    text: root.info.sub;
+                    color: Theme.muted;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    horizontal-stretch: 1;
+                }
+            }
+        }
+        if root.info.ping != "": VerticalLayout {
+            alignment: center;
+            Rectangle {
+                height: 22px;
+                width: pt.preferred-width + 14px;
+                border-radius: 7px;
+                background: root.info.ping-state == 1 ? #2fbf7122 : root.info.ping-state == 2 ? #e7b43c22 : root.info.ping-state == 3 ? #ec6a5e22 : Theme.card2;
+                pt := Text {
+                    text: root.info.ping;
+                    font-size: 11.5px;
+                    color: root.info.ping-state == 1 ? Theme.ok : root.info.ping-state == 2 ? Theme.warn : root.info.ping-state == 3 ? Theme.bad : Theme.muted;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            GhostIcon {
+                icon: Icons.more;
+                clicked => {
+                    root.menu-x = root.width - 196px;
+                    root.menu-y = root.height - 6px;
+                    menu.show();
+                }
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: 190px;
+        Rectangle {
+            background: Theme.card2;
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: Theme.line;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #000a;
+            VerticalLayout {
+                padding: 4px;
+                MenuRow { text: "Изменить…"; icon: Icons.edit; clicked => { root.open-editor(); } }
+                MenuRow { text: "Копировать ссылку"; icon: Icons.copy; clicked => { root.copy-link(); } }
+                MenuRow { text: "Удалить"; icon: Icons.trash; danger: true; clicked => { root.remove(); } }
+            }
+        }
+    }
+}
+
+component EntryRow inherits Rectangle {
+    in property <EntryItem> item;
+    callback remove();
+    height: 46px;
+    HorizontalLayout {
+        padding-left: 2px;
+        spacing: 10px;
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                border-radius: 8px;
+                background: root.item.icon == 3 ? #ec6a5e1a : Theme.card;
+                Icon {
+                    width: 15px;
+                    height: 15px;
+                    commands: root.item.icon == 0 ? Icons.app : root.item.icon == 1 ? Icons.globe : root.item.icon == 2 ? Icons.net : root.item.icon == 4 ? Icons.layers : Icons.alert;
+                    tint: root.item.icon == 3 ? Theme.bad : root.item.icon == 4 ? Theme.accent : Theme.muted;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text { text: root.item.text; color: root.item.icon == 3 ? Theme.bad : Theme.text; font-size: 13px; overflow: elide; }
+            Text { text: root.item.kind; color: root.item.icon == 3 ? Theme.bad : Theme.dim; font-size: 10.5px; overflow: elide; }
+        }
+        VerticalLayout {
+            alignment: center;
+            GhostIcon { icon: Icons.close; hover-tint: Theme.bad; clicked => { root.remove(); } }
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #1f232b;
+    }
+}
+
+// =====================================================================
+// Окно
+// =====================================================================
+
+export component AppWindow inherits Window {
+    title: "Foxray";
+    icon: @image-url("icon.png");
+    no-frame: root.frameless;
+    width: 380px;
+    height: 720px;
+    background: Theme.bg;
+    default-font-size: 13px;
+
+    in-out property <int> tab: 0;
+
+    // ---- Главная ----
+    in property <int> state: 0;            // 0 выкл, 1 подключение, 2 подключено, 3 ошибка
+    in property <string> status-title: "Отключено";
+    in property <string> status-sub: "";
+    in property <string> uptime: "";
+    in property <bool> has-server: false;
+    in property <string> cur-name;
+    in property <string> cur-desc;
+    in property <string> cur-tag;
+    in property <string> cur-ping;
+    in property <[RouteRow]> routes;
+    callback route-clicked(int);
+    in property <string> zapret-home-title;
+    in property <string> zapret-home-sub;
+    in property <string> zapret-home-strategy;
+    in property <bool> zapret-home-bad: false;
+    in property <string> down-num: "0";
+    in property <string> down-unit: "Б/с";
+    in property <string> up-num: "0";
+    in property <string> up-unit: "Б/с";
+    in property <string> down-path: "M0 27 L100 27";
+    in property <string> up-path: "M0 27 L100 27";
+    in property <string> totals: "—";
+    in property <string> conns: "—";
+    in property <string> down-total;
+    in property <string> up-total;
+    in property <int> final-action: 0;
+
+    callback toggle-connection();
+    callback set-mode(int);
+
+    // ---- Рамка окна ----
+    in property <bool> frameless: false;
+    in property <int> close-action: 0;   // 0 трей, 1 панель задач, 2 выход
+    callback set-close-action(int);
+    callback quit-app();
+    callback start-drag();
+    callback minimize();
+    callback close-window();
+
+    // ---- Редактор сервера ----
+    in-out property <int> servers-view: 0;  // 0 — список, 1 — редактор
+    // ---- Соединения (на главной) ----
+    in-out property <int> home-view: 0;     // 0 — главная, 1 — соединения
+    in property <[ConnRow]> conn-rows;
+    in property <string> conn-title;
+    in property <string> conn-note;
+    callback open-conns();
+    callback close-conns();
+    callback conn-search(string);
+    callback conn-close(string);
+    in property <bool> edit-new: false;
+    in property <int> edit-proto: 0;        // 0 VLESS, 1 Hysteria2
+    in property <[FieldItem]> edit-fields;
+    in property <string> edit-error;
+    callback edit-server(int);
+    callback new-server();
+    callback set-edit-proto(int);
+    callback edit-field(int, string);
+    callback save-server();
+
+    // ---- Серверы ----
+    in property <[Row]> rows;
+    in property <bool> no-servers: true;
+    in-out property <int> editing-index: -1;
+    in-out property <bool> adding: false;
+    in-out property <string> add-text;
+    in property <string> add-error;
+    in property <string> toast;
+
+    callback select-server(int);
+    callback remove-server(int);
+    callback rename-server(int, string);
+    callback copy-link(int);
+    callback search(string);
+    callback toggle-group(string);
+    callback refresh-group(string);
+    callback ping-all();
+    callback open-add();
+    callback add-links(string);
+    callback read-clipboard() -> string;
+
+    // ---- Правила ----
+    in property <[RuleCard]> rule-cards;
+    in-out property <int> rules-view: 0;   // 0 — списки, 1 — один список
+    in property <int> list-sel: -1;
+    in property <string> list-name;
+    in property <bool> list-builtin;
+    in property <bool> picking-set: false;
+    in property <[SetRow]> set-rows;
+    callback open-set-picker();
+    callback set-filter(string);
+    callback set-chosen(int);
+    callback close-set-picker();
+    in property <bool> list-enabled;
+    in property <int> list-action;
+    in property <[EntryItem]> entries;
+    in-out property <bool> editing-list-name: false;
+    in property <bool> picking: false;
+    in property <[string]> processes;
+
+    callback open-list(int);
+    callback add-list();
+    callback card-enabled(int, bool);
+    callback set-list-enabled(bool);
+    callback set-list-action(int);
+    callback rename-list(string);
+    callback delete-list();
+    callback add-entry(string);
+    callback remove-entry(int);
+    callback pick-process();
+    callback process-filter(string);
+    callback process-chosen(string);
+    callback close-picker();
+
+    // ---- Настройки ----
+    in-out property <int> settings-view: 0; // 0 — настройки, 1 — журнал, 2 — zapret
+    // ---- Zapret ----
+    in property <bool> zapret-supported: false;
+    in property <bool> zapret-enabled: false;
+    in property <bool> zapret-installed: false;
+    in property <string> zapret-info;
+    in property <string> zapret-status;
+    in property <bool> zapret-status-bad: false;
+    in property <string> zapret-short;
+    in property <[ZapretRow]> zapret-rows;
+    in property <bool> zapret-testing: false;
+    in property <string> zapret-progress;
+    in property <bool> zapret-busy: false;
+    in property <bool> zapret-update: false;
+    callback zapret-toggled(bool);
+    in property <bool> zapret-autostart: true;
+    callback zapret-autostart-toggled(bool);
+    callback zapret-select(int);
+    callback zapret-test();
+    callback zapret-cancel-test();
+    callback zapret-download();
+    callback zapret-open-folder();
+    in property <bool> lan-bypass: true;
+    in property <bool> autostart: false;
+    in property <string> autostart-title: "Запускать вместе с Windows";
+    in property <bool> connect-on-start: false;
+    in-out property <bool> dns-custom;
+    in-out property <string> dns-address;
+    in property <string> dns-note;
+    in property <bool> dns-note-bad;
+    callback dns-custom-toggled(bool);
+    callback dns-address-edited(string);
+    in property <[SubItem]> subs;
+    in property <string> settings-message;
+    in property <string> log-text;
+    in property <string> version: "";
+    // ---- Обновление ----
+    in property <string> app-version;
+    in property <string> update-status;
+    in property <bool> update-bad: false;
+    in property <bool> update-busy: false;
+    in property <bool> update-available: false;
+    callback update-check();
+    callback update-install();
+
+    callback lan-bypass-toggled(bool);
+    callback autostart-toggled(bool);
+    callback connect-on-start-toggled(bool);
+    callback refresh-sub(int);
+    callback remove-sub(int);
+    callback open-folder();
+    callback open-rules-file();
+    callback clear-log();
+
+    VerticalLayout {
+        // ================= Своя полоса заголовка =================
+        Rectangle {
+            height: 26px;
+            TouchArea {
+                pointer-event(ev) => {
+                    if (ev.button == PointerEventButton.left && ev.kind == PointerEventKind.down) {
+                        root.start-drag();
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                // 4px + 4px внутри кнопки = 8px от правого края, как и сверху.
+                padding-right: 4px;
+                CaptionButton { icon: Icons.dash; dot: Theme.accent; clicked => { root.minimize(); } }
+                CaptionButton { icon: Icons.cross-small; dot: #ec5f53; clicked => { root.close-window(); } }
+            }
+        }
+
+        // ================= Содержимое вкладки =================
+        Rectangle {
+            vertical-stretch: 1;
+
+            // ---------- Главная ----------
+            if root.tab == 0 && root.home-view == 0: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    height: 32px;
+                    VerticalLayout {
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icon.svg");
+                            width: 28px;
+                            height: 28px;
+                            image-fit: contain;
+                            image-rendering: smooth;
+                        }
+                    }
+                    Text { text: "Foxray"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                // ---- Плитка VPN ----
+                Rectangle {
+                    border-radius: 14px;
+                    height: 78px;
+                    background: root.state == 2 ? @linear-gradient(120deg, #1d3a2b 0%, #1c2028 65%)
+                              : root.state == 3 ? @linear-gradient(120deg, #3a1f1f 0%, #1c2028 65%)
+                              : root.state == 1 ? @linear-gradient(120deg, #3a3220 0%, #1c2028 65%)
+                              : Theme.card;
+                    CornerMasks { width: parent.width; height: parent.height; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 12px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            Switch {
+                                h: 28px;
+                                on: root.state == 1 || root.state == 2;
+                                on-color: root.state == 2 ? Theme.ok : Theme.warn;
+                                toggled => { root.toggle-connection(); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            Text { text: "VPN"; font-size: 10.5px; color: Theme.muted; letter-spacing: 0.5px; }
+                            Text { text: root.status-title; font-size: 16px; font-weight: 600; color: Theme.text; overflow: elide; }
+                            Text {
+                                text: root.state == 2 ? (root.cur-ping != "" ? root.uptime + " · " + root.cur-ping : root.uptime) : root.status-sub;
+                                font-size: 11.5px;
+                                color: root.state == 3 ? #ff9a90 : Theme.muted;
+                                overflow: elide;
+                            }
+                        }
+                        // Сервер — короткая метка (MSK, DE2…), нажатие открывает список
+                        VerticalLayout {
+                            alignment: center;
+                            if root.has-server: TagButton { text: root.cur-tag; clicked => { root.tab = 1; } }
+                            if !root.has-server: TagButton { text: "Выбрать сервер"; plain: true; clicked => { root.tab = 1; } }
+                        }
+                    }
+                }
+
+                // ---- Плитка zapret (Windows) ----
+                if root.zapret-supported: Rectangle {
+                    border-radius: 14px;
+                    height: 78px;
+                    background: root.zapret-enabled && !root.zapret-home-bad ? @linear-gradient(120deg, #2c2142 0%, #1c2028 65%)
+                              : root.zapret-enabled ? @linear-gradient(120deg, #3a1f1f 0%, #1c2028 65%)
+                              : Theme.card;
+                    CornerMasks { width: parent.width; height: parent.height; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 12px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            Switch {
+                                h: 28px;
+                                on: root.zapret-enabled;
+                                on-color: Theme.zap;
+                                toggled(v) => { root.zapret-toggled(v); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            Text { text: "ZAPRET"; font-size: 10.5px; color: Theme.muted; letter-spacing: 0.5px; }
+                            Text { text: root.zapret-home-title; font-size: 16px; font-weight: 600; color: Theme.text; overflow: elide; }
+                            Text { text: root.zapret-home-sub; font-size: 11.5px; color: root.zapret-home-bad ? #ff9a90 : Theme.muted; overflow: elide; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            TagButton { text: root.zapret-home-strategy; clicked => { root.tab = 3; root.settings-view = 2; } }
+                        }
+                    }
+                }
+
+                // ---- Трафик: маршруты + «N соединений» ----
+                Card {
+                    VerticalLayout {
+                        // Заголовок и кнопка — в углах карточки: по 10px от верха и краёв.
+                        HorizontalLayout {
+                            padding-left: 12px;
+                            padding-right: 10px;
+                            padding-top: 10px;
+                            padding-bottom: 10px;
+                            spacing: 4px;
+                            height: 42px;
+                            VerticalLayout { alignment: center; Text { text: "Трафик"; color: Theme.muted; font-size: 12px; } }
+                            VerticalLayout {
+                                alignment: center;
+                                InfoDot { tip: "Куда идёт трафик. Метка справа — маршрут: VPN, zapret, напрямую или блок. Серая — сейчас не действует (например, VPN выключен).\n\nПод названием — сколько соединений открыто сейчас и сколько через них прошло.\n\nНажатие на «Всё остальное» переключает: всё через VPN ⇄ через VPN только списки. Остальные строки открывают свои настройки."; }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                            // «N соединений ›» — список соединений.
+                            if root.state == 2 && root.conns != "—": VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    height: 22px;
+                                    width: cl.preferred-width;
+                                    border-radius: 6px;
+                                    background: cca.pressed ? #ffffff2a : cca.has-hover ? #ffffff22 : #ffffff14;
+                                    animate background { duration: 120ms; }
+                                    cca := TouchArea { mouse-cursor: pointer; clicked => { root.open-conns(); } }
+                                    cl := HorizontalLayout {
+                                        padding-left: 8px;
+                                        padding-right: 4px;
+                                        spacing: 2px;
+                                        Text { text: root.conns; font-size: 11.5px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                                        VerticalLayout { alignment: center; Icon { width: 12px; height: 12px; commands: Icons.right; tint: cca.has-hover ? Theme.text : Theme.muted; } }
+                                    }
+                                }
+                            }
+                        }
+                        for r[i] in root.routes: Rectangle {
+                            height: r.sub != "" ? 46px : 40px;
+                            background: rrta.has-hover ? #ffffff06 : transparent;
+                            rrta := TouchArea { mouse-cursor: pointer; clicked => { root.route-clicked(r.target); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 10px;
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    horizontal-stretch: 1;
+                                    min-width: 0px;
+                                    Text { text: r.title; font-size: 13px; color: r.kind == 4 ? Theme.muted : Theme.text; overflow: elide; }
+                                    if r.sub != "": Text { text: r.sub; font-size: 10.5px; color: Theme.dim; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        height: 20px;
+                                        width: chip.preferred-width + 16px;
+                                        border-radius: 10px;
+                                        background: r.kind == 0 ? #5b8cff22 : r.kind == 1 ? #a970ff22 : r.kind == 2 ? #2fbf7122 : r.kind == 3 ? #ec6a5e22 : #ffffff10;
+                                        chip := Text {
+                                            text: r.chip;
+                                            font-size: 11px;
+                                            color: r.kind == 0 ? Theme.vpn : r.kind == 1 ? Theme.zap : r.kind == 2 ? Theme.ok : r.kind == 3 ? Theme.bad : Theme.muted;
+                                        }
+                                    }
+                                }
+                            }
+                            // Разделитель — и сверху (от заголовка), и между строками.
+                            Rectangle { y: 0px; height: 1px; x: 12px; width: parent.width - 12px; background: #222731; }
+                        }
+                    }
+                }
+
+                // ---- Скорость ----
+                HorizontalLayout {
+                    spacing: 10px;
+                    SpeedCard {
+                        label: "Загрузка";
+                        arrow: "↓";
+                        tint: Theme.ok;
+                        num: root.down-num;
+                        unit: root.down-unit;
+                        path: root.down-path;
+                        word: "скачано";
+                        total: root.state == 2 ? root.down-total : "";
+                    }
+                    SpeedCard {
+                        label: "Отдача";
+                        arrow: "↑";
+                        tint: Theme.accent;
+                        num: root.up-num;
+                        unit: root.up-unit;
+                        path: root.up-path;
+                        word: "отправлено";
+                        total: root.state == 2 ? root.up-total : "";
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+            }
+
+            // ---------- Соединения ----------
+            if root.tab == 0 && root.home-view == 1: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+                Back { text: "Главная"; clicked => { root.close-conns(); } }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "Соединения"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                    VerticalLayout {
+                        alignment: center;
+                        InfoDot { tip: "Все соединения, открытые сейчас через Foxray. Обновляется каждую секунду, сверху — те, что прокачали больше всего.\n\nМетка справа — куда пошло: VPN, zapret или напрямую. Крестик закрывает соединение (программа обычно сразу откроет новое — так можно проверить, куда оно пойдёт после смены правил)."; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if root.conn-title != "": VerticalLayout { alignment: center; Chip { text: root.conn-title; font-size: 11.5px; } }
+                }
+                Field {
+                    placeholder-text: "Поиск: сайт, программа, VPN, zapret…";
+                    edited(t) => { root.conn-search(t); }
+                }
+                if root.conn-note != "": VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    Text { text: root.conn-note; color: Theme.muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+                if root.conn-note == "": Rectangle {
+                    vertical-stretch: 1;
+                    // Свой Flickable с тонкой полосой прокрутки у края окна
+                    // (стандартная полоса Slint рисуется поверх строк и «раскрывается»).
+                    cfl := Flickable {
+                        width: parent.width;
+                        x: 0px;
+                        content-height: cvl.preferred-height;
+                        cvl := VerticalLayout {
+                            alignment: start;
+                            for c in root.conn-rows: Rectangle {
+                                height: c.header ? 30px : 48px;
+                                // Заголовок группы: «CLAUDE.EXE · 4»
+                                if c.header: Text {
+                                    x: 2px;
+                                    y: parent.height - self.height - 6px;
+                                    text: c.host;
+                                    color: Theme.dim;
+                                    font-size: 11px;
+                                    letter-spacing: 0.6px;
+                                }
+                                // Соединение: строка карточки группы (скругления — у первой и последней).
+                                if !c.header: Rectangle {
+                                    background: crow.has-hover ? #20252e : Theme.card;
+                                    border-top-left-radius: c.first ? 12px : 0px;
+                                    border-top-right-radius: c.first ? 12px : 0px;
+                                    border-bottom-left-radius: c.last ? 12px : 0px;
+                                    border-bottom-right-radius: c.last ? 12px : 0px;
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 8px;
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            min-width: 0px;
+                                            // При наведении строка сужается под крестик — текст обрезается «…», не налезает.
+                                            Text { text: c.host; color: Theme.text; font-size: 13px; overflow: elide; }
+                                            Text { text: c.sub; color: Theme.dim; font-size: 10.5px; overflow: elide; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            spacing: 3px;
+                                            HorizontalLayout {
+                                                alignment: end;
+                                                Rectangle {
+                                                    height: 18px;
+                                                    width: rt.preferred-width + 14px;
+                                                    border-radius: 9px;
+                                                    background: c.kind == 0 ? #5b8cff22 : c.kind == 1 ? #a970ff22 : c.kind == 2 ? #2fbf7122 : #ffffff10;
+                                                    rt := Text {
+                                                        text: c.route;
+                                                        font-size: 10.5px;
+                                                        color: c.kind == 0 ? Theme.vpn : c.kind == 1 ? Theme.zap : c.kind == 2 ? Theme.ok : Theme.muted;
+                                                    }
+                                                }
+                                            }
+                                            Text { text: c.traffic; color: Theme.muted; font-size: 10.5px; horizontal-alignment: right; }
+                                        }
+                                        // Крестик выезжает при наведении и отодвигает метки влево.
+                                        Rectangle {
+                                            width: crow.has-hover ? 26px : 0px;
+                                            animate width { duration: 120ms; easing: ease-out; }
+                                            clip: true;
+                                            Rectangle {
+                                                x: 0px;
+                                                width: 26px;
+                                                height: 26px;
+                                                border-radius: 6px;
+                                                background: crow.mouse-x > crow.width - 36px ? #ec6a5e22 : transparent;
+                                                Icon {
+                                                    width: 15px;
+                                                    height: 15px;
+                                                    commands: Icons.close;
+                                                    tint: crow.mouse-x > crow.width - 36px ? Theme.bad : Theme.dim;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !c.last: Rectangle {
+                                        y: parent.height - 1px;
+                                        height: 1px;
+                                        x: 12px;
+                                        width: parent.width - 12px;
+                                        background: #222731;
+                                    }
+                                    // Один TouchArea на строку: и наведение, и нажатие на крестик.
+                                    crow := TouchArea {
+                                        mouse-cursor: self.has-hover && self.mouse-x > self.width - 36px ? pointer : default;
+                                        clicked => {
+                                            if self.mouse-x > self.width - 36px { root.conn-close(c.id); }
+                                        }
+                                    }
+                                }
+                            }
+                            Rectangle { height: 8px; }
+                        }
+                    }
+                    // Тонкая полоса прокрутки у правого края окна (в отступе страницы) — только если список не влезает.
+                    if cfl.content-height > cfl.height: Rectangle {
+                        x: parent.width + 16px - 7px;
+                        width: 3px;
+                        border-radius: 1.5px;
+                        background: #ffffff2a;
+                        height: max(24px, cfl.height * cfl.height / cfl.content-height);
+                        y: (cfl.height - self.height) * (-cfl.content-y) / max(1px, cfl.content-height - cfl.height);
+                    }
+                }
+            }
+            }
+
+            // ---------- Серверы ----------
+            if root.tab == 1 && root.servers-view == 0: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Серверы"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; height: 36px; }
+                }
+                Field {
+                    placeholder-text: "Поиск";
+                    edited(t) => { root.search(t); }
+                }
+                if root.no-servers: VerticalLayout {
+                    vertical-stretch: 1;
+                    alignment: center;
+                    spacing: 12px;
+                    Text { text: "Серверов пока нет"; color: Theme.muted; font-size: 15px; horizontal-alignment: center; }
+                    Text { text: "Вставь ссылку на сервер\nили подписку."; color: Theme.dim; horizontal-alignment: center; }
+                    HorizontalLayout {
+                        alignment: center;
+                        Button2 { text: "Добавить сервер"; icon: Icons.plus; primary: true; clicked => { root.open-add(); } }
+                    }
+                }
+                if !root.no-servers: ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                    alignment: start;
+                    for r in root.rows: Rectangle {
+                        height: r.kind == 0 ? 32px : 62px;
+                        if r.kind == 0: GroupHeader {
+                            info: r;
+                            toggle => { root.toggle-group(r.key); }
+                            refresh => { root.refresh-group(r.key); }
+                        }
+                        if r.kind == 1: ServerRow {
+                            y: 3px;
+                            height: 56px;
+                            width: parent.width - 6px;
+                            x: 1px;
+                            info: r;
+                            editing: r.index == root.editing-index;
+                            clicked => { root.select-server(r.index); }
+                            start-edit => { root.editing-index = r.index; }
+                            rename(t) => {
+                                root.rename-server(r.index, t);
+                                root.editing-index = -1;
+                            }
+                            copy-link => { root.copy-link(r.index); }
+                            open-editor => { root.edit-server(r.index); }
+                            remove => { root.remove-server(r.index); }
+                        }
+                    }
+                    VerticalLayout {
+                        padding-top: 8px;
+                        padding-left: 1px;
+                        padding-right: 5px;
+                        AddButton { text: "Добавить сервер или подписку"; clicked => { root.open-add(); } }
+                    }
+                    }
+                }
+            }
+            }
+
+            // ---------- Серверы: редактор ----------
+            if root.tab == 1 && root.servers-view == 1: Page {
+                VerticalLayout {
+                    padding: 16px;
+                    padding-top: 8px;
+                    padding-bottom: 8px;
+                    spacing: 10px;
+                    Back { text: "Серверы"; clicked => { root.servers-view = 0; } }
+                    Text {
+                        text: root.edit-new ? "Новый сервер" : "Изменить сервер";
+                        font-size: 21px;
+                        font-weight: 700;
+                        color: Theme.text;
+                    }
+                    if root.edit-new: Segmented {
+                        items: ["VLESS", "Hysteria2"];
+                        current: root.edit-proto;
+                        changed(i) => { root.set-edit-proto(i); }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            padding-right: 6px;
+                            for f[i] in root.edit-fields: VerticalLayout {
+                                spacing: 4px;
+                                if f.kind != 1: Text { text: f.label; color: Theme.muted; font-size: 11.5px; }
+                                if f.kind == 0: Field {
+                                    text: f.value;
+                                    edited(t) => { root.edit-field(i, t); }
+                                }
+                                if f.kind == 2: Segmented {
+                                    items: f.labels;
+                                    current: f.choice;
+                                    changed(c) => { root.edit-field(i, c); }
+                                }
+                                if f.kind == 1: Card {
+                                    height: 44px;
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            Text { text: f.label; color: Theme.text; font-size: 13px; }
+                                            if f.hint != "": Text { text: f.hint; color: Theme.dim; font-size: 11px; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            Switch {
+                                                on: f.value == "1";
+                                                toggled(v) => { root.edit-field(i, v ? "1" : ""); }
+                                            }
+                                        }
+                                    }
+                                }
+                                if f.kind == 0 && f.hint != "": Hint { text: f.hint; }
+                            }
+                        }
+                    }
+                    if root.edit-error != "": Hint { text: root.edit-error; bad: true; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button2 { text: "Отмена"; horizontal-stretch: 1; clicked => { root.servers-view = 0; } }
+                        Button2 { text: "Сохранить"; primary: true; horizontal-stretch: 1; clicked => { root.save-server(); } }
+                    }
+                }
+            }
+
+            // ---------- Правила: все списки ----------
+            if root.tab == 2 && root.rules-view == 0: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Правила"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; height: 36px; }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        for c[i] in root.rule-cards: Card {
+                            height: 64px;
+                            background: rta.has-hover ? #20252e : Theme.card;
+                            animate background { duration: 120ms; }
+                            rta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-list(i); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 8px;
+                                spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    horizontal-stretch: 1;
+                                    Text { text: c.name; color: c.enabled ? Theme.text : Theme.muted; font-weight: 600; font-size: 13.5px; overflow: elide; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        Rectangle {
+                                            height: 17px;
+                                            width: ct.preferred-width + 12px;
+                                            border-radius: 5px;
+                                            background: c.action == 0 ? #5b8cff22 : c.action == 1 ? #2fbf7122 : #ec6a5e22;
+                                            ct := Text {
+                                                text: c.action == 0 ? "через VPN" : c.action == 1 ? "напрямую" : "блок";
+                                                font-size: 10.5px;
+                                                color: c.action == 0 ? Theme.vpn : c.action == 1 ? Theme.ok : Theme.bad;
+                                            }
+                                        }
+                                        Text { text: c.summary; color: Theme.muted; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Switch { on: c.enabled; toggled(v) => { root.card-enabled(i, v); } }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; }
+                                }
+                            }
+                        }
+                        AddButton { text: "Новый список"; clicked => { root.add-list(); } }
+                    }
+                }
+            }
+            }
+
+            // ---------- Правила: один список ----------
+            if root.tab == 2 && root.rules-view == 1: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+
+                Back {
+                    text: "Правила";
+                    clicked => {
+                        root.rules-view = 0;
+                        root.editing-list-name = false;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    if !root.editing-list-name: Text {
+                        text: root.list-name;
+                        font-size: 21px;
+                        font-weight: 700;
+                        color: Theme.text;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    if !root.editing-list-name && root.list-builtin: VerticalLayout {
+                        alignment: center;
+                        InfoDot {
+                            tip: (root.list-action == 0 ? "Базовый список: всё из него идёт через VPN."
+                                : root.list-action == 1 ? "Базовый список: всё из него идёт напрямую, мимо VPN."
+                                : "Базовый список: всё из него блокируется.")
+                                + " Его нельзя удалить — только выключить или очистить. Изменения применяются сами через пару секунд.";
+                        }
+                    }
+                    if !root.editing-list-name: Rectangle { horizontal-stretch: 1; }
+                    if root.editing-list-name: Field {
+                        horizontal-stretch: 1;
+                        text: root.list-name;
+                        accepted(t) => {
+                            root.rename-list(t);
+                            root.editing-list-name = false;
+                        }
+                        init => {
+                            self.focus();
+                            self.select-all();
+                        }
+                    }
+                    if !root.editing-list-name && !root.list-builtin: VerticalLayout {
+                        alignment: center;
+                        GhostIcon { icon: Icons.edit; clicked => { root.editing-list-name = true; } }
+                    }
+                    if !root.list-builtin: VerticalLayout {
+                        alignment: center;
+                        GhostIcon { icon: Icons.trash; hover-tint: Theme.bad; clicked => { root.delete-list(); } }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        Switch { on: root.list-enabled; toggled(v) => { root.set-list-enabled(v); } }
+                    }
+                }
+                if !root.list-builtin: Segmented {
+                    items: ["через VPN", "напрямую", "блок"];
+                    current: root.list-action;
+                    changed(i) => { root.set-list-action(i); }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    entry-edit := Field {
+                        placeholder-text: "vk.com, 10.0.0.0/8, steam.exe…";
+                        accepted(t) => {
+                            root.add-entry(t);
+                            self.text = "";
+                        }
+                    }
+                    IconButton {
+                        icon: Icons.plus;
+                        accent: true;
+                        size: 36px;
+                        clicked => {
+                            root.add-entry(entry-edit.text);
+                            entry-edit.text = "";
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button2 { text: "Программа"; icon: Icons.app; horizontal-stretch: 1; clicked => { root.pick-process(); } }
+                    Button2 { text: "Готовый набор"; icon: Icons.layers; horizontal-stretch: 1; clicked => { root.open-set-picker(); } }
+                }
+                if root.entries.length == 0: Hint {
+                    text: "Список пуст. Добавь домен, IP, подсеть, программу или готовый набор.";
+                }
+                // Новый пустой список — сразу предлагаем готовый набор.
+                if root.entries.length == 0 && !root.list-builtin: Card {
+                    height: 64px;
+                    background: sta2.has-hover ? Theme.card2 : Theme.card;
+                    animate background { duration: 120ms; }
+                    sta2 := TouchArea { mouse-cursor: pointer; clicked => { root.open-set-picker(); } }
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 12px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 34px;
+                                height: 34px;
+                                border-radius: 9px;
+                                background: #ff7a2f22;
+                                Icon { width: 18px; height: 18px; commands: Icons.layers; tint: Theme.accent; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            Text { text: "Начать с готового набора"; color: Theme.text; font-size: 13.5px; font-weight: 600; }
+                            Text { text: "YouTube, Discord, Telegram и другие сервисы"; color: Theme.dim; font-size: 11px; overflow: elide; }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; }
+                        }
+                    }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for e[i] in root.entries: EntryRow {
+                        item: e;
+                        remove => { root.remove-entry(i); }
+                    }
+                }
+                Hint { text: "Изменения применяются сами через пару секунд."; }
+            }
+            }
+
+            // ---------- Настройки ----------
+            // Единый стиль: заголовок раздела → карточка → подсказка под карточкой.
+            // В строке — коротко (одна строка), всё длинное и ошибки — в подсказке.
+            if root.tab == 3 && root.settings-view == 0: Page {
+ ScrollView {
+                VerticalLayout {
+                    padding: 16px;
+                    padding-top: 8px;
+                    padding-bottom: 16px;
+                    spacing: 18px;
+                    alignment: start;
+
+                    Text { text: "Настройки"; font-size: 21px; font-weight: 700; color: Theme.text; }
+
+                    Group {
+                        Section { text: "СЕТЬ"; }
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    title: "Не трогать локальную сеть";
+                                    subtitle: "роутер, NAS, принтеры, RDP — мимо VPN";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch { on: root.lan-bypass; toggled(v) => { root.lan-bypass-toggled(v); } }
+                                    }
+                                }
+                                SettingRow {
+                                    title: "Свой DNS-сервер";
+                                    subtitle: root.dns-custom ? "AdGuard Home, Pi-hole и т. п." : "сейчас 1.1.1.1 через VPN";
+                                    last: !root.dns-custom;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch { on: root.dns-custom; toggled(v) => { root.dns-custom-toggled(v); } }
+                                    }
+                                }
+                                if root.dns-custom: VerticalLayout {
+                                    padding: 12px;
+                                    padding-top: 4px;
+                                    Field {
+                                        inset: true;
+                                        text <=> root.dns-address;
+                                        edited(t) => { root.dns-address-edited(t); }
+                                    }
+                                }
+                            }
+                        }
+                        if root.dns-custom && root.dns-note != "": Hint { text: root.dns-note; bad: root.dns-note-bad; }
+                    }
+
+                    Group {
+                        Section { text: "ЗАПУСК"; }
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    title: root.autostart-title;
+                                    subtitle: "в свёрнутом виде";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch { on: root.autostart; toggled(v) => { root.autostart-toggled(v); } }
+                                    }
+                                }
+                                SettingRow {
+                                    title: "Подключаться при запуске";
+                                    subtitle: "если сети ещё нет — подождёт её";
+                                    last: true;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch { on: root.connect-on-start; toggled(v) => { root.connect-on-start-toggled(v); } }
+                                    }
+                                }
+                            }
+                        }
+                        if root.settings-message != "": Hint { text: root.settings-message; bad: true; }
+                    }
+
+                    Group {
+                        SectionHead {
+                            text: "КНОПКА «ЗАКРЫТЬ»";
+                            tip: "В трей — окно прячется, Foxray остаётся в трее у часов.\nВ панель задач — окно сворачивается, иконки в трее нет. Выйти — правой кнопкой по значку в панели задач.\nВыход — Foxray закрывается полностью, VPN отключается.";
+                        }
+                        Segmented {
+                            items: ["В трей", "В панель задач", "Выход"];
+                            current: root.close-action;
+                            changed(i) => { root.set-close-action(i); }
+                        }
+
+                    }
+
+                    Group {
+                        SectionHead {
+                            text: "ПОДПИСКИ";
+                            tip: "Подписка — ссылка https://…, по которой провайдер VPN отдаёт список серверов. Добавить — «+» на вкладке «Серверы». Обновляются при каждом запуске Foxray и кнопкой ⟳.";
+                        }
+                        Card {
+                            VerticalLayout {
+                                if root.subs.length == 0: SettingRow {
+                                    title: "Подписок нет";
+                                    last: true;
+                                }
+                                for s[i] in root.subs: SettingRow {
+                                    title: s.name;
+                                    subtitle: s.info;
+                                    last: i == root.subs.length - 1;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostIcon { icon: Icons.refresh; clicked => { root.refresh-sub(i); } }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        GhostIcon { icon: Icons.close; hover-tint: Theme.bad; clicked => { root.remove-sub(i); } }
+                                    }
+                                }
+                            }
+                        }
+
+                    }
+
+                    if root.zapret-supported: Group {
+                        Section { text: "ОБХОД БЛОКИРОВОК"; }
+                        Card {
+                            SettingRow {
+                                title: "Zapret — Discord и YouTube без VPN";
+                                subtitle: root.zapret-short;
+                                clickable: true;
+                                last: true;
+                                clicked => { root.settings-view = 2; }
+                                VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                            }
+                        }
+                    }
+
+                    Group {
+                        SectionHead {
+                            text: "ОБНОВЛЕНИЕ";
+                            tip: "Foxray проверяет новые версии на GitHub при запуске. «Обновить» скачивает новую версию, заменяет программу (и sing-box) и перезапускает Foxray. Серверы, подписки, настройки и правила остаются как были. VPN на время обновления отключится.";
+                        }
+                        Card {
+                            SettingRow {
+                                title: "Foxray " + root.app-version;
+                                subtitle: root.update-bad ? "не удалось — подробности ниже" : root.update-status;
+                                last: true;
+                                VerticalLayout {
+                                    alignment: center;
+                                    Button2 {
+                                        text: root.update-busy ? "Подождите…" : root.update-available ? "Обновить" : "Проверить";
+                                        raised: true;
+                                        primary: root.update-available && !root.update-busy;
+                                        clicked => {
+                                            if !root.update-busy {
+                                                if root.update-available { root.update-install(); } else { root.update-check(); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if root.update-bad: Hint { text: root.update-status; bad: true; }
+                    }
+
+                    Group {
+                        Section { text: "ПРОЧЕЕ"; }
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    title: "Журнал sing-box";
+                                    clickable: true;
+                                    clicked => { root.settings-view = 1; }
+                                    VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                                }
+                                SettingRow {
+                                    title: "Открыть папку программы";
+                                    clickable: true;
+                                    clicked => { root.open-folder(); }
+                                    VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                                }
+                                SettingRow {
+                                    title: "rules.json в блокноте";
+                                    clickable: true;
+                                    clicked => { root.open-rules-file(); }
+                                    VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                                }
+                                SettingRow {
+                                    title: "Выйти из Foxray";
+                                    subtitle: "отключить VPN и закрыть программу";
+                                    clickable: true;
+                                    last: true;
+                                    clicked => { root.quit-app(); }
+                                    VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.version;
+                        color: Theme.dim;
+                        font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+            }
+
+            // ---------- Журнал ----------
+            if root.tab == 3 && root.settings-view == 1: Page {
+ VerticalLayout {
+                padding: 16px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 10px;
+                Back { text: "Настройки"; clicked => { root.settings-view = 0; } }
+                HorizontalLayout {
+                    Text { text: "Журнал"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; horizontal-stretch: 1; }
+                    Button2 { text: "Очистить"; clicked => { root.clear-log(); } }
+                }
+                Area {
+                    vertical-stretch: 1;
+                    read-only: true;
+                    font-size: 11px;
+                    text: root.log-text;
+                }
+            }
+            }
+
+            // ---------- Zapret ----------
+            if root.tab == 3 && root.settings-view == 2: Page {
+ zsv := ScrollView {
+                VerticalLayout {
+                    width: zsv.visible-width;
+                    padding: 16px;
+                    padding-top: 8px;
+                    // Запас снизу: высоту многострочных подсказок (итог проверки) Slint считает по одной строке.
+                    padding-bottom: 56px;
+                    spacing: 18px;
+                    alignment: start;
+
+                    VerticalLayout {
+                        spacing: 10px;
+                        Back { text: "Настройки"; clicked => { root.settings-view = 0; } }
+                        Text { text: "Zapret"; font-size: 21px; font-weight: 700; color: Theme.text; }
+                    }
+
+                    Group {
+                        Card {
+                            VerticalLayout {
+                                SettingRow {
+                                    title: "Включить zapret";
+                                    subtitle: "Discord (и голос), YouTube — мимо VPN";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch {
+                                            on: root.zapret-enabled;
+                                            toggled(v) => { root.zapret-toggled(v); }
+                                        }
+                                    }
+                                }
+                                SettingRow {
+                                    title: "Включать при запуске Foxray";
+                                    subtitle: root.zapret-autostart ? "как был при выходе" : "после запуска — выключен";
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Switch {
+                                            on: root.zapret-autostart;
+                                            toggled(v) => { root.zapret-autostart-toggled(v); }
+                                        }
+                                    }
+                                }
+                                SettingRow {
+                                    title: "Сборка zapret";
+                                    subtitle: root.zapret-info;
+                                    last: true;
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Button2 {
+                                            text: root.zapret-busy ? "Скачиваю…" : !root.zapret-installed ? "Скачать" : root.zapret-update ? "Обновить" : "Проверить";
+                                            raised: true;
+                                            primary: !root.zapret-installed || root.zapret-update;
+                                            clicked => { if !root.zapret-busy { root.zapret-download(); } }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if root.zapret-status != "": Hint { text: root.zapret-status; bad: root.zapret-status-bad; }
+                    }
+
+                    if root.zapret-installed: Group {
+                        SectionHead {
+                            text: "СТРАТЕГИЯ";
+                            tip: "«Подобрать стратегию»: Foxray по очереди включает каждую стратегию и открывает 7 адресов Discord и YouTube (1–3 минуты).\n\n7/7 · 155 мс — открылось 7 из 7, среднее время ответа.\nЗелёный — открылось всё, жёлтый — часть, красный — ничего.\n\nГолос так не проверить: выбери одну из лучших и зайди в голосовой канал. Не работает голос — бери следующую.";
+                        }
+                        Button2 {
+                            text: root.zapret-testing ? "Остановить проверку" : "Подобрать стратегию";
+                            icon: root.zapret-testing ? Icons.close : Icons.bolt;
+                            primary: !root.zapret-testing;
+                            clicked => {
+                                if root.zapret-testing { root.zapret-cancel-test(); } else { root.zapret-test(); }
+                            }
+                        }
+                        if root.zapret-progress != "": Hint { text: root.zapret-progress; }
+                        Card {
+                            VerticalLayout {
+                                for z[i] in root.zapret-rows: Rectangle {
+                                    height: 48px;
+                                    background: zra.has-hover && !root.zapret-testing ? #ffffff06 : z.selected ? #ff7a2f0d : transparent;
+                                    zra := TouchArea {
+                                        enabled: !root.zapret-testing;
+                                        mouse-cursor: pointer;
+                                        clicked => { root.zapret-select(i); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 12px;
+                                        padding-right: 12px;
+                                        spacing: 12px;
+                                        VerticalLayout { alignment: center; Radio { on: z.selected; } }
+                                        VerticalLayout {
+                                            alignment: center;
+                                            horizontal-stretch: 1;
+                                            min-width: 0px;
+                                            Text { text: z.title; color: Theme.text; font-size: 13px; font-weight: z.selected ? 600 : 400; overflow: elide; }
+                                            Text {
+                                                text: z.result;
+                                                font-size: 11px;
+                                                overflow: elide;
+                                                color: z.state == 1 ? Theme.ok : z.state == 2 ? Theme.warn : z.state == 3 ? Theme.bad : z.state == 4 ? Theme.vpn : Theme.dim;
+                                            }
+                                        }
+                                    }
+                                    if i < root.zapret-rows.length - 1: Rectangle {
+                                        y: parent.height - 1px;
+                                        height: 1px;
+                                        x: 42px;
+                                        width: parent.width - 42px;
+                                        background: #222731;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Card {
+                        SettingRow {
+                            title: "Открыть папку zapret";
+                            subtitle: "списки доменов, стратегии";
+                            clickable: true;
+                            last: true;
+                            clicked => { root.zapret-open-folder(); }
+                            VerticalLayout { alignment: center; Icon { width: 16px; height: 16px; commands: Icons.right; tint: Theme.dim; } }
+                        }
+                    }
+                }
+            }
+            }
+        }
+
+        // ================= Нижняя панель =================
+        Rectangle {
+            height: 60px;
+            background: Theme.panel;
+            Rectangle { y: 0; height: 1px; background: #1f232b; }
+            HorizontalLayout {
+                TabButton { label: "Главная"; icon: Icons.power; active: root.tab == 0; clicked => { root.tab = 0; } }
+                TabButton { label: "Серверы"; icon: Icons.servers; active: root.tab == 1; clicked => { root.tab = 1; } }
+                TabButton {
+                    label: "Правила";
+                    icon: Icons.rules;
+                    active: root.tab == 2;
+                    clicked => {
+                        if (root.tab == 2) { root.rules-view = 0; }
+                        root.tab = 2;
+                    }
+                }
+                TabButton {
+                    label: "Настройки";
+                    icon: Icons.gear;
+                    active: root.tab == 3;
+                    clicked => {
+                        if (root.tab == 3) { root.settings-view = 0; }
+                        root.tab = 3;
+                    }
+                }
+            }
+        }
+    }
+
+    // Тонкая обводка (у окна без рамки иначе сливается с фоном)
+    Rectangle {
+        border-width: 1px;
+        border-color: #2a2f38;
+    }
+
+    // ================= Всплывающее уведомление =================
+    if root.toast != "": Rectangle {
+        y: parent.height - 60px - 52px;
+        x: (parent.width - self.width) / 2;
+        height: 36px;
+        width: tt.preferred-width + 28px;
+        border-radius: 18px;
+        background: #2b313c;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 180ms; }
+        drop-shadow-blur: 12px;
+        drop-shadow-color: #0008;
+        tt := Text { text: root.toast; color: Theme.text; font-size: 12.5px; }
+    }
+
+    // ================= Подсказка «i» =================
+    if Tip.text != "": Rectangle {
+        property <length> w: min(300px, root.width - 32px);
+        width: self.w;
+        height: tipt.preferred-height + 20px;
+        x: max(16px, min(Tip.x - self.w / 2, root.width - self.w - 16px));
+        // Не влезает снизу — показываем над значком.
+        y: Tip.y + 6px + self.height < root.height - 8px ? Tip.y + 6px : max(8px, Tip.y - 24px - self.height);
+        border-radius: 10px;
+        background: #2b313c;
+        border-width: 1px;
+        border-color: #39404d;
+        drop-shadow-blur: 14px;
+        drop-shadow-color: #000a;
+        tipt := Text {
+            x: 12px;
+            y: 10px;
+            width: parent.width - 24px;
+            text: Tip.text;
+            color: Theme.text;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+
+    // ================= Панель «Добавить» =================
+    if root.adding: Rectangle {
+        background: #000000a0;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 160ms; }
+        TouchArea { clicked => { root.adding = false; root.add-text = ""; } }
+        Rectangle {
+            property <length> slide: 60px;
+            init => { self.slide = 0; }
+            animate slide { duration: 220ms; easing: ease-out; }
+            y: parent.height - self.height + self.slide;
+            height: sheet.preferred-height;
+            background: Theme.panel;
+            border-top-left-radius: 16px;
+            border-top-right-radius: 16px;
+            border-width: 1px;
+            border-color: Theme.line;
+            TouchArea { } // клики внутри панели не закрывают её
+            sheet := VerticalLayout {
+                padding: 16px;
+                padding-top: 10px;
+                spacing: 10px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle { width: 36px; height: 4px; border-radius: 2px; background: #3a414d; }
+                }
+                HorizontalLayout {
+                    Text { text: "Добавить сервер"; font-size: 16px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; vertical-alignment: center; }
+                    GhostIcon { icon: Icons.close; clicked => { root.adding = false; root.add-text = ""; } }
+                }
+                VerticalLayout {
+                    spacing: 6px;
+                    Area {
+                        height: 96px;
+                        text <=> root.add-text;
+                    }
+                    if root.add-error != "": Hint { text: root.add-error; bad: true; }
+                    if root.add-error == "": Hint { text: "Ссылка vless:// или hy2://, несколько ссылок сразу или подписка https://"; }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button2 {
+                        text: "Вручную";
+                        icon: Icons.edit;
+                        clicked => {
+                            root.adding = false;
+                            root.new-server();
+                        }
+                    }
+                    Button2 {
+                        text: "Из буфера";
+                        icon: Icons.clip;
+                        horizontal-stretch: 1;
+                        clicked => { root.add-text = root.read-clipboard(); }
+                    }
+                    Button2 {
+                        text: "Добавить";
+                        primary: true;
+                        horizontal-stretch: 1;
+                        clicked => { root.add-links(root.add-text); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= Выбор готового набора =================
+    if root.picking-set: Rectangle {
+        background: #000000a0;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 160ms; }
+        TouchArea { clicked => { root.close-set-picker(); } }
+        Rectangle {
+            x: 16px;
+            y: 50px;
+            width: parent.width - 32px;
+            height: parent.height - 100px;
+            border-radius: 14px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+            TouchArea { }
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "Готовые наборы"; font-size: 15px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; vertical-alignment: center; }
+                    GhostIcon { icon: Icons.close; clicked => { root.close-set-picker(); } }
+                }
+                Field {
+                    placeholder-text: "Поиск сервиса…";
+                    edited(t) => { root.set-filter(t); }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for r in root.set-rows: Rectangle {
+                        height: r.kind == 0 ? 30px : 44px;
+                        border-radius: 8px;
+                        background: r.kind == 1 && sra.has-hover ? Theme.card2 : transparent;
+                        animate background { duration: 120ms; }
+                        sra := TouchArea {
+                            enabled: r.kind == 1;
+                            mouse-cursor: pointer;
+                            clicked => { root.set-chosen(r.index); }
+                        }
+                        if r.kind == 0: Text {
+                            x: 10px;
+                            y: parent.height - self.height - 4px;
+                            text: r.title;
+                            color: Theme.dim;
+                            font-size: 11px;
+                        }
+                        if r.kind == 1: HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                horizontal-stretch: 1;
+                                Text { text: r.title; color: Theme.text; font-size: 13px; overflow: elide; }
+                                Text { text: r.sub; color: Theme.dim; font-size: 10.5px; overflow: elide; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: r.added ? Theme.accent : transparent;
+                                    border-width: r.added ? 0px : 1.5px;
+                                    border-color: #3a414d;
+                                    animate background { duration: 120ms; }
+                                    if r.added: Icon { width: 14px; height: 14px; stroke-width: 2.4px; commands: Icons.check; tint: white; }
+                                }
+                            }
+                        }
+                    }
+                }
+                Hint { text: "Нажми ещё раз, чтобы убрать набор из списка. Наборы скачиваются сами и обновляются раз в неделю."; }
+            }
+        }
+    }
+
+    // ================= Выбор программы =================
+    if root.picking: Rectangle {
+        background: #000000a0;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 160ms; }
+        TouchArea { clicked => { root.close-picker(); } }
+        Rectangle {
+            x: 16px;
+            y: 50px;
+            width: parent.width - 32px;
+            height: parent.height - 100px;
+            border-radius: 14px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+            TouchArea { }
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                HorizontalLayout {
+                    Text { text: "Запущенные программы"; font-size: 15px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; vertical-alignment: center; }
+                    GhostIcon { icon: Icons.close; clicked => { root.close-picker(); } }
+                }
+                Field {
+                    placeholder-text: "Поиск…";
+                    edited(t) => { root.process-filter(t); }
+                }
+                ListView {
+                    vertical-stretch: 1;
+                    for p in root.processes: Rectangle {
+                        height: 36px;
+                        border-radius: 8px;
+                        background: pta.has-hover ? Theme.card2 : transparent;
+                        animate background { duration: 120ms; }
+                        pta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.process-chosen(p); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { width: 15px; height: 15px; commands: Icons.app; tint: Theme.muted; }
+                            }
+                            Text { text: p; color: Theme.text; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

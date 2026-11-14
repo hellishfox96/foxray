@@ -1,0 +1,463 @@
+//! Zapret в Linux: вместо winws.exe (WinDivert) — nfqws из проекта bol-van/zapret.
+//!
+//! Как это устроено:
+//!   * Стратегии те же — батники сборки Flowseal. Из аргументов winws убираем
+//!     Windows-параметры --wf-tcp/--wf-udp (что перехватывать) — их заменяют правила nftables.
+//!   * Правила nftables и сам nfqws требуют root. Поэтому Foxray один раз за запуск
+//!     поднимает помощника через pkexec (система спросит пароль): `foxray-gui --zapret-helper`.
+//!     Помощник живёт, пока жив Foxray (общается через stdin/stdout), ставит правила,
+//!     запускает и перезапускает nfqws, а при выходе Foxray всё убирает за собой.
+//!   * Пакеты, которые программы кладут в TUN Foxray (интерфейс «foxray»), не трогаем:
+//!     zapret нужен только тому, что уходит наружу через обычную сеть (направление «напрямую»).
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+/// Номер очереди NFQUEUE (свой, чтобы не столкнуться с установленным zapret — у него 200).
+pub const QNUM: u16 = 4242;
+const TABLE: &str = "foxray_zapret";
+/// Имя TUN Foxray (config.rs: tun_name).
+const TUN: &str = "foxray";
+
+/// Аргументы winws → (аргументы nfqws, TCP-порты, UDP-порты).
+pub fn plan(win_args: &[String]) -> Result<(Vec<String>, String, String), String> {
+    let mut tcp = String::new();
+    let mut udp = String::new();
+    let mut out = Vec::with_capacity(win_args.len() + 2);
+    for a in win_args {
+        if let Some(p) = a.strip_prefix("--wf-tcp=") {
+            tcp = p.to_string();
+        } else if let Some(p) = a.strip_prefix("--wf-udp=") {
+            udp = p.to_string();
+        } else if a.starts_with("--wf-") {
+            // остальные --wf-* — тоже про WinDivert, в Linux не нужны
+        } else {
+            out.push(a.clone());
+        }
+    }
+    for p in [&tcp, &udp] {
+        if !p.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '-') {
+            return Err(format!("странный список портов: {p}"));
+        }
+    }
+    if tcp.is_empty() && udp.is_empty() {
+        return Err("в стратегии нет --wf-tcp/--wf-udp".into());
+    }
+    Ok((out, tcp, udp))
+}
+
+/// Правила nftables: первые пакеты соединений на нужные порты — в очередь nfqws.
+pub fn nft_script(tcp: &str, udp: &str) -> String {
+    let set = |p: &str| p.split(',').filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ");
+    let mut post = String::new();
+    let mut pre = String::new();
+    if !tcp.is_empty() {
+        post += &format!("    tcp dport {{ {} }} ct original packets 1-9 queue num {QNUM} bypass\n", set(tcp));
+        pre += &format!("    tcp sport {{ {} }} ct reply packets 1-3 queue num {QNUM} bypass\n", set(tcp));
+    }
+    if !udp.is_empty() {
+        post += &format!("    udp dport {{ {} }} ct original packets 1-9 queue num {QNUM} bypass\n", set(udp));
+    }
+    format!(
+        "table inet {TABLE}\n\
+         delete table inet {TABLE}\n\
+         table inet {TABLE} {{\n\
+         \x20 chain post {{\n\
+         \x20   type filter hook postrouting priority mangle; policy accept;\n\
+         \x20   oifname \"lo\" return\n\
+         \x20   oifname \"{TUN}\" return\n\
+         \x20   meta mark and 0x40000000 == 0x40000000 return\n\
+         {post}\
+         \x20 }}\n\
+         \x20 chain pre {{\n\
+         \x20   type filter hook prerouting priority filter; policy accept;\n\
+         \x20   iifname \"lo\" return\n\
+         \x20   iifname \"{TUN}\" return\n\
+         {pre}\
+         \x20 }}\n\
+         }}\n"
+    )
+}
+
+// ================================================================ помощник (root)
+
+fn send(out: &Arc<Mutex<std::io::Stdout>>, v: serde_json::Value) {
+    let mut o = out.lock().unwrap();
+    let _ = writeln!(o, "{v}");
+    let _ = o.flush();
+}
+
+fn find_tool(name: &str) -> Option<std::path::PathBuf> {
+    ["/usr/sbin", "/sbin", "/usr/bin", "/bin"].iter().map(|d| Path::new(d).join(name)).find(|p| p.exists())
+}
+
+fn nft(script: &str) -> Result<(), String> {
+    let nft = find_tool("nft").ok_or("нет программы nft (пакет nftables)")?;
+    let mut c = Command::new(nft)
+        .args(["-f", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    c.stdin.take().unwrap().write_all(script.as_bytes()).map_err(|e| e.to_string())?;
+    let out = c.wait_with_output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("nft: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}
+
+fn nft_clear() {
+    let _ = nft(&format!("table inet {TABLE}\ndelete table inet {TABLE}\n"));
+}
+
+/// `foxray-gui --zapret-helper` под pkexec. Возвращает код выхода.
+pub fn helper_main() -> i32 {
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    // Хвосты прошлого запуска (Foxray мог упасть).
+    nft_clear();
+    send(&out, serde_json::json!({"t": "ready"}));
+
+    let child: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let stop_child = |child: &Arc<Mutex<Option<Child>>>| {
+        if let Some(mut c) = child.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    };
+
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        match cmd["op"].as_str() {
+            Some("start") => {
+                stop_child(&child);
+                let res = (|| -> Result<u32, String> {
+                    let nfqws = cmd["nfqws"].as_str().ok_or("нет пути к nfqws")?;
+                    if Path::new(nfqws).file_name().and_then(|n| n.to_str()) != Some("nfqws") {
+                        return Err("неверный путь к nfqws".into());
+                    }
+                    let args: Vec<String> = cmd["args"]
+                        .as_array()
+                        .ok_or("нет аргументов")?
+                        .iter()
+                        .filter_map(|a| a.as_str().map(String::from))
+                        .collect();
+                    let tcp = cmd["tcp"].as_str().unwrap_or("");
+                    let udp = cmd["udp"].as_str().unwrap_or("");
+                    if !(tcp.chars().chain(udp.chars())).all(|c| c.is_ascii_digit() || c == ',' || c == '-') {
+                        return Err("неверные порты".into());
+                    }
+                    nft(&nft_script(tcp, udp))?;
+                    let mut c = Command::new(nfqws)
+                        .arg(format!("--qnum={QNUM}"))
+                        // Остаёмся root: файлы стратегий лежат в домашней папке, «nobody» их не прочитает.
+                        .arg("--uid=0:0")
+                        .args(&args)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| format!("nfqws не запустился: {e}"))?;
+                    let pid = c.id();
+                    let pipes: Vec<Box<dyn Read + Send>> =
+                        vec![Box::new(c.stdout.take().unwrap()), Box::new(c.stderr.take().unwrap())];
+                    for p in pipes {
+                        let out = out.clone();
+                        std::thread::spawn(move || {
+                            for l in BufReader::new(p).lines().map_while(Result::ok) {
+                                if !l.trim().is_empty() {
+                                    send(&out, serde_json::json!({"t": "log", "msg": l}));
+                                }
+                            }
+                        });
+                    }
+                    *child.lock().unwrap() = Some(c);
+                    // Сторож: nfqws завершился сам — сообщаем.
+                    let (child2, out2) = (child.clone(), out.clone());
+                    std::thread::spawn(move || loop {
+                        std::thread::sleep(Duration::from_millis(300));
+                        let mut g = child2.lock().unwrap();
+                        match g.as_mut() {
+                            Some(c) if c.id() == pid => {
+                                if let Ok(Some(st)) = c.try_wait() {
+                                    *g = None;
+                                    send(&out2, serde_json::json!({"t": "exited", "pid": pid, "code": st.code().unwrap_or(-1)}));
+                                    return;
+                                }
+                            }
+                            _ => return, // остановлен нами или заменён новым
+                        }
+                    });
+                    Ok(pid)
+                })();
+                match res {
+                    Ok(pid) => send(&out, serde_json::json!({"t": "ok", "pid": pid})),
+                    Err(e) => {
+                        nft_clear();
+                        send(&out, serde_json::json!({"t": "err", "msg": e}));
+                    }
+                }
+            }
+            Some("stop") => {
+                stop_child(&child);
+                nft_clear();
+                send(&out, serde_json::json!({"t": "ok", "pid": 0}));
+            }
+            _ => {}
+        }
+    }
+    // stdin закрылся — Foxray вышел или упал: убираем всё.
+    stop_child(&child);
+    nft_clear();
+    0
+}
+
+// ================================================================ сторона Foxray
+
+struct Client {
+    stdin: ChildStdin,
+    _child: Child,
+    replies: mpsc::Receiver<serde_json::Value>,
+}
+
+#[derive(Default)]
+struct Shared {
+    log: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    /// PID запущенного nfqws (0 — не запущен).
+    pid: u32,
+    /// Код выхода, если nfqws завершился сам.
+    exited: Option<i32>,
+    alive: bool,
+}
+
+static CLIENT: Mutex<Option<Client>> = Mutex::new(None);
+static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
+
+fn shared<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
+    let mut g = SHARED.lock().unwrap();
+    f(g.get_or_insert_with(Shared::default))
+}
+
+/// Помощник уже запущен (пароль введён).
+pub fn helper_ready() -> bool {
+    shared(|s| s.alive) && CLIENT.lock().unwrap().is_some()
+}
+
+/// Запустить помощника через pkexec. Блокирует, пока пользователь вводит пароль.
+pub fn helper_start() -> Result<(), String> {
+    if helper_ready() {
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let pkexec = find_tool("pkexec").ok_or("нет pkexec — zapret в Linux нужны права root")?;
+    let mut child = Command::new(pkexec)
+        .arg(&exe)
+        .arg("--zapret-helper")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    let stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel::<serde_json::Value>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            match v["t"].as_str() {
+                Some("log") => {
+                    let log = shared(|s| s.log.clone());
+                    if let Some(f) = log {
+                        f(v["msg"].as_str().unwrap_or("").to_string());
+                    }
+                }
+                Some("exited") => {
+                    let pid = v["pid"].as_u64().unwrap_or(0) as u32;
+                    shared(|s| {
+                        if s.pid == pid {
+                            s.pid = 0;
+                            s.exited = Some(v["code"].as_i64().unwrap_or(-1) as i32);
+                        }
+                    });
+                }
+                _ => {
+                    let _ = tx.send(v);
+                }
+            }
+        }
+        // Помощник закрылся (отказ в пароле, ошибка).
+        shared(|s| {
+            if s.alive && s.pid != 0 {
+                s.exited = Some(-1);
+            }
+            s.alive = false;
+            s.pid = 0;
+        });
+        *CLIENT.lock().unwrap() = None;
+    });
+    // Ждём «ready» — пока человек вводит пароль.
+    match rx.recv_timeout(Duration::from_secs(180)) {
+        Ok(v) if v["t"] == "ready" => {
+            shared(|s| s.alive = true);
+            *CLIENT.lock().unwrap() = Some(Client { stdin, _child: child, replies: rx });
+            Ok(())
+        }
+        Ok(v) => Err(format!("помощник: {v}")),
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("пароль не введён — без прав root zapret в Linux не работает".into())
+        }
+    }
+}
+
+fn request(cmd: serde_json::Value) -> Result<u32, String> {
+    let mut g = CLIENT.lock().unwrap();
+    let c = g.as_mut().ok_or("помощник zapret не запущен")?;
+    // Старые ответы (если были) — выбрасываем.
+    while c.replies.try_recv().is_ok() {}
+    writeln!(c.stdin, "{cmd}").map_err(|e| format!("помощник не отвечает: {e}"))?;
+    let _ = c.stdin.flush();
+    match c.replies.recv_timeout(Duration::from_secs(20)) {
+        Ok(v) if v["t"] == "ok" => Ok(v["pid"].as_u64().unwrap_or(0) as u32),
+        Ok(v) => Err(v["msg"].as_str().unwrap_or("ошибка помощника").to_string()),
+        Err(_) => Err("помощник не ответил".into()),
+    }
+}
+
+/// Запустить nfqws (через помощника). on_log — строки вывода nfqws.
+pub fn start(
+    nfqws: &Path,
+    args: Vec<String>,
+    tcp: String,
+    udp: String,
+    on_log: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<u32, String> {
+    shared(|s| {
+        s.log = Some(on_log);
+        s.exited = None;
+        s.pid = 0;
+    });
+    let pid = request(serde_json::json!({
+        "op": "start",
+        "nfqws": nfqws.to_string_lossy(),
+        "args": args,
+        "tcp": tcp,
+        "udp": udp,
+    }))?;
+    shared(|s| s.pid = pid);
+    Ok(pid)
+}
+
+pub fn stop() {
+    shared(|s| {
+        s.pid = 0;
+        s.log = None;
+    });
+    let _ = request(serde_json::json!({"op": "stop"}));
+}
+
+/// nfqws завершился сам — код выхода (один раз).
+pub fn take_exited() -> Option<i32> {
+    shared(|s| s.exited.take())
+}
+
+pub fn running_pid() -> u32 {
+    shared(|s| s.pid)
+}
+
+/// Чужие nfqws (например, установленный системно zapret) — будут мешать.
+pub fn foreign_nfqws() -> Vec<u32> {
+    let ours = running_pid();
+    std::fs::read_dir("/proc")
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+                .filter(|pid| *pid != ours)
+                .filter(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).map(|c| c.trim() == "nfqws").unwrap_or(false))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ================================================================ скачивание nfqws
+
+/// Папка с бинарником под этот процессор в архиве zapret.
+fn arch_dir() -> Option<&'static str> {
+    match std::env::consts::ARCH {
+        "x86_64" => Some("linux-x86_64"),
+        "x86" => Some("linux-x86"),
+        "aarch64" => Some("linux-arm64"),
+        "arm" => Some("linux-arm"),
+        _ => None,
+    }
+}
+
+/// Скачать nfqws последней версии в dir/nfqws. Возвращает версию («v72.13»).
+pub fn download_nfqws(dir: &Path) -> Result<String, String> {
+    let arch = arch_dir().ok_or_else(|| format!("нет nfqws для процессора {}", std::env::consts::ARCH))?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .user_agent("Foxray")
+        .build();
+    // Последняя версия — по переадресации со страницы latest.
+    let resp = agent
+        .get("https://github.com/bol-van/zapret/releases/latest")
+        .call()
+        .map_err(|e| format!("не узнал версию nfqws: {e}"))?;
+    let tag = resp.get_url().rsplit('/').next().unwrap_or("").to_string();
+    if !tag.starts_with('v') || !tag[1..].chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err(format!("не узнал версию nfqws ({})", resp.get_url()));
+    }
+    drop(resp);
+    let url = format!("https://github.com/bol-van/zapret/releases/download/{tag}/zapret-{tag}.tar.gz");
+    let resp = agent.get(&url).call().map_err(|e| format!("nfqws не скачался: {e}"))?;
+    let gz = flate2::read::GzDecoder::new(resp.into_reader().take(64 * 1024 * 1024));
+    let mut ar = tar::Archive::new(gz);
+    let want = format!("binaries/{arch}/nfqws");
+    for entry in ar.entries().map_err(|e| e.to_string())? {
+        let mut e = entry.map_err(|e| e.to_string())?;
+        let path = e.path().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+        if path.ends_with(&want) {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            let tmp = dir.join("nfqws.new");
+            let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            std::io::copy(&mut e, &mut f).map_err(|e| e.to_string())?;
+            drop(f);
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+            std::fs::rename(&tmp, dir.join("nfqws")).map_err(|e| e.to_string())?;
+            let _ = std::fs::write(dir.join("nfqws.version"), &tag);
+            return Ok(tag);
+        }
+    }
+    Err(format!("в архиве zapret нет {want}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plan_strips_windivert() {
+        let a: Vec<String> = ["--wf-tcp=80,443,12", "--wf-udp=443,50000-50100", "--wf-l3=ipv4", "--filter-udp=443", "--new"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (args, tcp, udp) = plan(&a).unwrap();
+        assert_eq!(args, vec!["--filter-udp=443", "--new"]);
+        assert_eq!(tcp, "80,443,12");
+        assert_eq!(udp, "443,50000-50100");
+        let s = nft_script(&tcp, &udp);
+        assert!(s.contains("tcp dport { 80, 443, 12 } ct original packets 1-9 queue num 4242 bypass"));
+        assert!(s.contains("udp dport { 443, 50000-50100 }"));
+        assert!(s.contains("oifname \"foxray\" return"));
+    }
+}

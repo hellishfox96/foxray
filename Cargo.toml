@@ -1,0 +1,49 @@
+[package]
+name = "foxray"
+version = "0.6.0"
+edition = "2021"
+description = "Свой VPN-клиент поверх sing-box (VLESS+Reality, Hysteria2, TUN)"
+# Отсюда Foxray берёт обновления (выпуски на GitHub).
+repository = "https://github.com/hellishfox96/foxray"
+
+[[bin]]
+name = "foxray"
+path = "src/main.rs"
+
+[[bin]]
+name = "foxray-gui"
+path = "src/gui/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+percent-encoding = "2"
+thiserror = "2"
+slint = { version = "1.18", features = ["unstable-winit-030"] }
+arboard = { version = "3", default-features = false }
+tray-icon = "0.26"
+ureq = "2"
+# распаковка сборки zapret
+zip = { version = "2", default-features = false, features = ["deflate"] }
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+winresource = "0.1"
+slint-build = "1.18"
+embed-manifest = "1.5"
+
+[profile.release]
+strip = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Трей в Linux (tray-icon работает через GTK; версия — та же, что у tray-icon)
+gtk = "0.18"
+# zapret: распаковка nfqws из архива bol-van/zapret (.tar.gz)
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell", "Win32_Graphics_Dwm", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_Graphics_Gdi", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_Storage_EnhancedStorage", "Win32_System_Variant"] }
