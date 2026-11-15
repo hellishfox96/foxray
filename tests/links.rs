@@ -177,3 +177,27 @@ fn linux_local_dns_bypasses_resolved_stub() {
     assert_eq!(local["type"], "local");
 }
 
+
+#[test]
+fn tun_address_not_docker() {
+    // Не пересекаться с сетями Docker (172.17–172.31) — см. config::TUN_ADDR4.
+    let p = parse(REALITY).unwrap();
+    let (cfg, _) = build_config(&p, &Settings::default(), &Rules::default());
+    let a = cfg["inbounds"][0]["address"][0].as_str().unwrap();
+    assert_eq!(a, "198.18.0.1/30");
+}
+
+#[test]
+fn remote_desktop_direct() {
+    // RDP-клиенты и порт 3389 — мимо VPN; переключатель в настройках выключает.
+    let p = parse(REALITY).unwrap();
+    let has = |s: &Settings| {
+        let (cfg, _) = build_config(&p, s, &Rules::default());
+        let r = cfg["route"]["rules"].as_array().unwrap().clone();
+        let proc = r.iter().any(|x| x["process_name"].as_array().is_some_and(|a| a.iter().any(|v| v == "mstsc.exe") && a.iter().any(|v| v == "xfreerdp")) && x["outbound"] == "direct");
+        let port = r.iter().any(|x| x["port"] == serde_json::json!([3389]) && x["outbound"] == "direct");
+        (proc, port)
+    };
+    assert_eq!(has(&Settings::default()), (true, true));
+    assert_eq!(has(&Settings { remote_direct: false, ..Default::default() }), (false, false));
+}

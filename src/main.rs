@@ -6,6 +6,7 @@
 //!
 //! Опции gen:
 //!   --no-lan-bypass       пускать локальную сеть в туннель
+//!   --no-remote-direct    пускать удалённый рабочий стол (RDP) в туннель
 //!   --bypass <CIDR>       ещё одна подсеть напрямую (можно несколько раз)
 //!   --dns <адрес>         DNS через VPN (по умолчанию 1.1.1.1)
 //!   --dns-server <IP>     свой DNS (домашний — напрямую, внешний — через VPN)
@@ -85,6 +86,9 @@ fn gen(args: &[String]) -> Result<(), String> {
     if args.iter().any(|a| a == "--no-lan-bypass") {
         s.lan_bypass = false;
     }
+    if args.iter().any(|a| a == "--no-remote-direct") {
+        s.remote_direct = false;
+    }
     if args.iter().any(|a| a == "--ipv6") {
         s.ipv6 = true;
     }
@@ -162,6 +166,7 @@ fn rules_cmd(args: &[String]) -> Result<(), String> {
                         Ok(Entry::ProcessPath(_)) => "программа по пути".into(),
                         Ok(Entry::Geosite(_)) => "набор доменов".into(),
                         Ok(Entry::Geoip(_)) => "набор IP-адресов".into(),
+                        Ok(Entry::Port(p)) => format!("порт {p}"),
                         Err(e) => format!("ОШИБКА: {e}"),
                     };
                     println!("    {raw:<30} {kind}");
@@ -182,7 +187,7 @@ fn print_help() {
         "foxray — свой клиент поверх sing-box\n\n\
          foxray parse \"<ссылка>\"\n\
          foxray parse -f links.txt\n\
-         foxray gen \"<ссылка>\" [-o config.json] [--no-lan-bypass] [--bypass CIDR]... [--dns IP] [--dns-server IP] [--ipv6]\n\
+         foxray gen \"<ссылка>\" [-o config.json] [--no-lan-bypass] [--no-remote-direct] [--bypass CIDR]... [--dns IP] [--dns-server IP] [--ipv6]\n\
          foxray gen -f links.txt -n 1 -o config.json\n\n\
          foxray rules init | foxray rules check\n\n\
          Запуск: sing-box run -c config.json (из консоли администратора — нужен для TUN)"

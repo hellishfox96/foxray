@@ -20,12 +20,38 @@ pub const LAN_RANGES: &[&str] = &[
 ];
 
 /// Домены, которые резолвятся системным (локальным) DNS.
+/// Адрес TUN Foxray (IPv4).
+pub const TUN_ADDR4: &str = "198.18.0.1/30";
+
+/// Программы удалённого рабочего стола (RDP): идут мимо VPN на любом порту — иначе подключение
+/// к своему компьютеру уходит через VPN-сервер, и домашний роутер его часто не пускает.
+pub const REMOTE_PROCESSES: &[&str] = &[
+    // Windows
+    "mstsc.exe",
+    "msrdc.exe",
+    // Linux
+    "xfreerdp",
+    "xfreerdp3",
+    "sdl-freerdp",
+    "sdl-freerdp3",
+    "wlfreerdp",
+    "remmina",
+    "krdc",
+    "gnome-connections",
+    "vinagre",
+];
+/// Стандартный порт RDP — для любого другого клиента.
+pub const REMOTE_PORTS: &[u16] = &[3389];
+
 pub const LOCAL_SUFFIXES: &[&str] = &["lan", "local", "home.arpa", "localdomain", "internal"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// Не пускать локальную сеть в туннель.
     pub lan_bypass: bool,
+    /// Удалённый рабочий стол (RDP) мимо VPN — см. `REMOTE_PROCESSES`.
+    #[serde(default = "yes")]
+    pub remote_direct: bool,
     /// Дополнительные подсети в обход туннеля (например, рабочий VPN).
     pub extra_bypass: Vec<String>,
     /// DNS через VPN (DoH).
@@ -54,10 +80,15 @@ pub struct Settings {
     pub local_dns: Vec<std::net::IpAddr>,
 }
 
+fn yes() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             lan_bypass: true,
+            remote_direct: true,
             extra_bypass: Vec::new(),
             remote_dns: "1.1.1.1".into(),
             tun_name: "foxray".into(),
@@ -91,7 +122,11 @@ pub fn build(profile: &Profile, s: &Settings, user_rules: &Rules) -> (Value, Vec
     let server_cidrs: Vec<String> = s.server_ips.iter().map(|ip| host_cidr(*ip)).collect();
     bypass.extend(server_cidrs.iter().cloned());
 
-    let mut tun_addr = vec!["172.19.0.1/30".to_string()];
+    // Адрес TUN — из диапазона 198.18.0.0/15 (RFC 2544, для тестов сетей): его не раздают ни
+    // Docker (172.17–172.31, 192.168.x), ни роутеры, ни рабочие VPN (обычно 10.x).
+    // Раньше был 172.19.0.1/30, как у многих клиентов sing-box, — и совпадал с третьей сетью
+    // Docker: её шлюз 172.19.0.1 оказывался на TUN, и контейнеры переставали быть доступны.
+    let mut tun_addr = vec![TUN_ADDR4.to_string()];
     if s.ipv6 {
         tun_addr.push("fdfe:dcba:9876::1/126".into());
     }
@@ -117,6 +152,10 @@ pub fn build(profile: &Profile, s: &Settings, user_rules: &Rules) -> (Value, Vec
     ];
     if s.lan_bypass {
         rules.push(json!({ "ip_is_private": true, "outbound": "direct" }));
+    }
+    if s.remote_direct {
+        rules.push(json!({ "process_name": REMOTE_PROCESSES, "outbound": "direct" }));
+        rules.push(json!({ "port": REMOTE_PORTS, "outbound": "direct" }));
     }
     if !s.extra_bypass.is_empty() {
         rules.push(json!({ "ip_cidr": s.extra_bypass, "outbound": "direct" }));
@@ -280,8 +319,10 @@ pub fn linux_upstream_dns() -> Vec<std::net::IpAddr> {
     if !system.iter().any(|ip| ip.is_loopback()) {
         return Vec::new(); // обычные серверы — «local» и так работает
     }
-    // Свой TUN (172.19.0.0/30) — его DNS тоже попадает в этот файл, пока VPN включён.
-    let ours = |ip: &std::net::IpAddr| matches!(ip, std::net::IpAddr::V4(v) if v.octets()[..3] == [172, 19, 0]);
+    // Свой TUN (198.18.0.0/30; раньше 172.19.0.0/30) — его DNS тоже попадает в этот файл, пока VPN включён.
+    let ours = |ip: &std::net::IpAddr| {
+        matches!(ip, std::net::IpAddr::V4(v) if v.octets()[..3] == [198, 18, 0] || v.octets()[..3] == [172, 19, 0])
+    };
     servers("/run/systemd/resolve/resolv.conf").into_iter().filter(|ip| !ip.is_loopback() && !ours(ip)).collect()
 }
 

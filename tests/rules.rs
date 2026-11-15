@@ -111,3 +111,9 @@ fn zapret_list_not_in_config() {
     assert!(c.route.is_empty(), "{:?}", c.route);
     assert!(c.dns.is_empty());
 }
+
+#[test]
+fn port_entry() {
+    assert_eq!(parse_entry("port:19960").unwrap(), Entry::Port(19960));
+    assert!(parse_entry("port:abc").is_err());
+}

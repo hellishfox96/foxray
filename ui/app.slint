@@ -172,6 +172,7 @@ global Icons {
     out property <string> minimize: "M6 17.5 L18 17.5";
     out property <string> dash: "M7.5 12 L16.5 12";
     out property <string> cross-small: "M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5"; // по нижнему краю крестика, как в Windows
+    out property <string> monitor: "M4 5 L20 5 L20 16 L4 16 Z M8 20 L16 20 M12 16 L12 20 M10 8.5 L13 10.5 L10 12.5";
     out property <string> file: "M6 3 L14 3 L19 8 L19 21 L6 21 Z M14 3 L14 8 L19 8";
 }
 
@@ -431,6 +432,8 @@ component IRow inherits Rectangle {
     in property <string> subtitle;
     in property <color> subtitle-color: Theme.dim;
     in property <bool> clickable: false;
+    /// Подсказка «i» рядом с названием.
+    in property <string> tip;
     in property <bool> first: false;
     in property <bool> last: false;
     callback clicked();
@@ -468,7 +471,13 @@ component IRow inherits Rectangle {
             spacing: 2px;
             horizontal-stretch: 1;
             min-width: 0px;
-            Text { text: root.title; color: root.title-color; font-size: 13px; overflow: elide; }
+            if root.tip == "": Text { text: root.title; color: root.title-color; font-size: 13px; overflow: elide; }
+            if root.tip != "": HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                Text { text: root.title; color: root.title-color; font-size: 13px; overflow: elide; vertical-alignment: center; }
+                InfoDot { tip: root.tip; }
+            }
             if root.subtitle != "": Text { text: root.subtitle; color: root.subtitle-color; font-size: 10.5px; overflow: elide; }
         }
         @children
@@ -1455,6 +1464,7 @@ export component AppWindow inherits Window {
     callback zapret-download();
     callback zapret-open-folder();
     in property <bool> lan-bypass: true;
+    in property <bool> remote-direct: true;
     in property <bool> autostart: false;
     in property <string> autostart-title: "Запускать вместе с Windows";
     in property <bool> connect-on-start: false;
@@ -1488,6 +1498,7 @@ export component AppWindow inherits Window {
     callback update-install();
 
     callback lan-bypass-toggled(bool);
+    callback remote-direct-toggled(bool);
     callback autostart-toggled(bool);
     callback connect-on-start-toggled(bool);
     callback refresh-sub(int);
@@ -2286,8 +2297,16 @@ export component AppWindow inherits Window {
                                     icon: Icons.lan;
                                     tint: Theme.ok;
                                     title: "Не трогать локальную сеть";
-                                    subtitle: "роутер, NAS, принтеры, RDP — мимо VPN";
+                                    subtitle: "роутер, NAS, принтеры — мимо VPN";
                                     VerticalLayout { alignment: center; Switch { on: root.lan-bypass; toggled(v) => { root.lan-bypass-toggled(v); } } }
+                                }
+                                IRow {
+                                    icon: Icons.monitor;
+                                    tint: Theme.ok;
+                                    title: "Удалённый доступ напрямую";
+                                    subtitle: root.remote-direct ? "RDP — мимо VPN, на любом порту" : "RDP идёт как всё остальное";
+                                    tip: "Программы удалённого рабочего стола идут мимо VPN — на любом порту:\nWindows: mstsc, «Удалённый рабочий стол»\nLinux: FreeRDP, Remmina, KRDC, GNOME Connections\nи всё, что подключается на порт 3389.\n\nСвой порт (например 19960) — запись port:19960 в списке «Напрямую».";
+                                    VerticalLayout { alignment: center; Switch { on: root.remote-direct; toggled(v) => { root.remote-direct-toggled(v); } } }
                                 }
                                 IRow {
                                     icon: Icons.dns;

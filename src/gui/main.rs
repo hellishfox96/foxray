@@ -745,7 +745,7 @@ fn summarize(lists: &[&RuleList]) -> String {
             }
             let name = {
                 let e = e.trim();
-                let e = e.split_once(':').filter(|(k, _)| matches!(*k, "process" | "domain" | "full" | "keyword" | "geosite" | "geoip")).map(|(_, v)| v).unwrap_or(e);
+                let e = e.split_once(':').filter(|(k, _)| matches!(*k, "process" | "domain" | "full" | "keyword" | "geosite" | "geoip" | "port")).map(|(_, v)| v).unwrap_or(e);
                 let base = e.rsplit(['\\', '/']).next().unwrap_or(e);
                 base.strip_suffix(".exe").or_else(|| base.strip_suffix(".EXE")).unwrap_or(base).to_string()
             };
@@ -813,7 +813,11 @@ fn refresh_routes(ui: &AppWindow) {
         let on = app.conn_state == 1 || app.conn_state == 2;
         let all_vpn = app.rules.final_action != Action::Direct;
         let active = |a: Action| -> Vec<&RuleList> {
-            app.rules.lists.iter().filter(|l| l.enabled && l.action == a && !l.entries.is_empty()).collect()
+            app.rules
+                .lists
+                .iter()
+                .filter(|l| l.enabled && l.action == a && !l.entries.is_empty())
+                .collect()
         };
         let row = |title: String, sub: &str, chip: &str, kind: i32, target: i32| RouteRow {
             title: title.into(),
@@ -1510,6 +1514,7 @@ fn connect(ui: &AppWindow) {
         }
         let settings = Settings {
             lan_bypass: app.settings.lan_bypass,
+            remote_direct: app.settings.remote_direct,
             rule_set_dir: Some(app.store.dir.join("rulesets")),
             server_ips: foxray::config::resolve_server(&profile.server, profile.port),
             custom_dns: app.settings.custom_dns.then(|| app.settings.dns_address.clone()),
@@ -2114,7 +2119,7 @@ fn refresh_rules(ui: &AppWindow) {
                             icon: 3,
                             ..Default::default()
                         },
-                        (Ok(Entry::Keyword(_)), _) if zap_list => EntryItem {
+                        (Ok(Entry::Keyword(_) | Entry::Port(_)), _) if zap_list => EntryItem {
                             text: e.clone().into(),
                             kind: "слово zapret не понимает — пропущено".into(),
                             icon: 3,
@@ -2143,7 +2148,7 @@ fn refresh_rules(ui: &AppWindow) {
                             kind: k.into(),
                             icon: match kind {
                                 Entry::Process(_) | Entry::ProcessPath(_) => 0,
-                                Entry::Cidr(_) => 2,
+                                Entry::Cidr(_) | Entry::Port(_) => 2,
                                 _ => 1,
                             },
                             ..Default::default()
@@ -2579,6 +2584,7 @@ fn refresh_processes(ui: &AppWindow) {
 fn refresh_settings(ui: &AppWindow) {
     with_app(|app| {
         ui.set_lan_bypass(app.settings.lan_bypass);
+        ui.set_remote_direct(app.settings.remote_direct);
         ui.set_connect_on_start(app.settings.connect_on_start);
         ui.set_autostart(app.autostart);
         ui.set_close_action(app.settings.close_action);
@@ -2643,6 +2649,19 @@ fn setup_settings(ui: &AppWindow) {
             let _ = app.store.save_settings(&app.settings);
         });
         ui.set_lan_bypass(on);
+        if with_app(|app| app.runner.is_some()) {
+            reconnect(&ui);
+        }
+    });
+
+    let w = ui.as_weak();
+    ui.on_remote_direct_toggled(move |on| {
+        let ui = w.unwrap();
+        with_app(|app| {
+            app.settings.remote_direct = on;
+            let _ = app.store.save_settings(&app.settings);
+        });
+        ui.set_remote_direct(on);
         if with_app(|app| app.runner.is_some()) {
             reconnect(&ui);
         }

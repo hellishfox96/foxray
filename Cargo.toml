@@ -1,6 +1,6 @@
 [package]
 name = "foxray"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2021"
 description = "Свой VPN-клиент поверх sing-box (VLESS+Reality, Hysteria2, TUN)"
 # Отсюда Foxray берёт обновления (выпуски на GitHub).

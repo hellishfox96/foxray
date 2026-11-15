@@ -11,6 +11,7 @@
 //!   full:example.com     → только этот домен, без поддоменов
 //!   keyword:google       → домен содержит слово
 //!   domain: ip: process: path:
+//!   port:3389            → порт назначения (любая программа)
 //! Готовые наборы (см. geo.rs):
 //!   geosite:youtube      → все домены сервиса
 //!   geoip:telegram       → все IP-адреса сервиса, geoip:ru — страны
@@ -158,7 +159,8 @@ impl Rules {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
         let mut r: Self = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
         r.ensure_builtin();
-        if r.migrate_presets() {
+        let migrated = r.migrate_presets();
+        if migrated {
             let _ = r.save(path); // пересохраняем уже в новом виде
         }
         Ok(r)
@@ -216,6 +218,8 @@ pub enum Entry {
     Geosite(String),
     /// Тег набора адресов: geoip-telegram
     Geoip(String),
+    /// Порт назначения: port:3389
+    Port(u16),
 }
 
 pub fn parse_entry(raw: &str) -> Result<Entry, String> {
@@ -231,6 +235,9 @@ pub fn parse_entry(raw: &str) -> Result<Entry, String> {
             "keyword" => return Ok(Entry::Keyword(v.to_ascii_lowercase())),
             "ip" => return cidr(&v).map(Entry::Cidr),
             "process" => return Ok(Entry::Process(v)),
+            "port" => {
+                return v.parse::<u16>().ok().filter(|p| *p > 0).map(Entry::Port).ok_or_else(|| format!("«{s}» — после port: нужен номер порта"));
+            }
             "path" => return Ok(Entry::ProcessPath(v)),
             "geosite" | "geoip" => {
                 let kind = prefix.to_ascii_lowercase();
@@ -287,6 +294,7 @@ struct Grouped {
     cidr: Vec<String>,
     process: Vec<String>,
     path: Vec<String>,
+    port: Vec<u16>,
     /// Наборы: (тег, доменный ли)
     sets: Vec<(String, bool)>,
 }
@@ -302,6 +310,7 @@ impl Grouped {
                 Ok(Entry::Cidr(x)) => g.cidr.push(x),
                 Ok(Entry::Process(x)) => g.process.push(x),
                 Ok(Entry::ProcessPath(x)) => g.path.push(x),
+                Ok(Entry::Port(p)) => g.port.push(p),
                 Ok(Entry::Geosite(t)) => g.sets.push((t, true)),
                 Ok(Entry::Geoip(t)) => g.sets.push((t, false)),
                 Err(e) => errors.push(format!("список «{}»: {e}", list.name)),
@@ -329,6 +338,9 @@ impl Grouped {
         push("ip_cidr", &self.cidr);
         push("process_name", &self.process);
         push("process_path", &self.path);
+        if !self.port.is_empty() {
+            out.push(json!({ "port": self.port }));
+        }
         out
     }
 
@@ -463,6 +475,7 @@ pub fn describe(raw: &str) -> Result<String, String> {
         Entry::Cidr(c) => format!("IP {c}"),
         Entry::Process(_) => "программа".into(),
         Entry::ProcessPath(_) => "программа (путь)".into(),
+        Entry::Port(p) => format!("порт {p} — любая программа"),
         Entry::Geosite(_) => "набор доменов".into(),
         Entry::Geoip(_) => "набор IP-адресов".into(),
     })
