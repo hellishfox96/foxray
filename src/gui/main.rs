@@ -1513,6 +1513,7 @@ fn connect(ui: &AppWindow) {
             rule_set_dir: Some(app.store.dir.join("rulesets")),
             server_ips: foxray::config::resolve_server(&profile.server, profile.port),
             custom_dns: app.settings.custom_dns.then(|| app.settings.dns_address.clone()),
+            local_dns: foxray::config::linux_upstream_dns(),
             ..Default::default()
         };
         let rules = match &zap_list {

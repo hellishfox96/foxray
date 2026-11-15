@@ -161,3 +161,19 @@ fn custom_dns_home_and_public() {
     assert_eq!(cfg["dns"]["servers"][0]["type"], "https");
     assert_eq!(errs.len(), 1);
 }
+
+#[test]
+fn linux_local_dns_bypasses_resolved_stub() {
+    // DNS «напрямую» — прямо на DNS сети, мимо туннеля (иначе в Linux он ходит по кругу через resolved).
+    let p = parse(REALITY).unwrap();
+    let s = Settings { local_dns: vec!["192.168.1.1".parse().unwrap()], ..Default::default() };
+    let (cfg, _) = build_config(&p, &s, &Rules::default());
+    let local = cfg["dns"]["servers"].as_array().unwrap().iter().find(|x| x["tag"] == "dns-local").unwrap().clone();
+    assert_eq!(local["type"], "udp");
+    assert_eq!(local["server"], "192.168.1.1");
+    // без него — системный
+    let (cfg, _) = build_config(&p, &Settings::default(), &Rules::default());
+    let local = cfg["dns"]["servers"].as_array().unwrap().iter().find(|x| x["tag"] == "dns-local").unwrap().clone();
+    assert_eq!(local["type"], "local");
+}
+

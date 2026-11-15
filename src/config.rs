@@ -48,6 +48,10 @@ pub struct Settings {
     /// к нему напрямую по локальной сети, внешний — через VPN. None — DoH на remote_dns.
     #[serde(default)]
     pub custom_dns: Option<String>,
+    /// Linux: настоящий DNS провайдера/роутера для «напрямую» (см. `linux_upstream_dns`).
+    /// Пусто — системный («local»).
+    #[serde(default)]
+    pub local_dns: Vec<std::net::IpAddr>,
 }
 
 impl Default for Settings {
@@ -64,6 +68,7 @@ impl Default for Settings {
             rule_set_dir: None,
             server_ips: Vec::new(),
             custom_dns: None,
+            local_dns: Vec::new(),
         }
     }
 }
@@ -169,10 +174,18 @@ pub fn build(profile: &Profile, s: &Settings, user_rules: &Rules) -> (Value, Vec
     }
     let dns_final = if home_dns || final_out != "direct" { "dns-remote" } else { "dns-local" };
 
+    // DNS для «напрямую». В Linux с systemd-resolved системный DNS — это 127.0.0.53, а sing-box
+    // при подключении сам направляет resolved в туннель: запрос по кругу возвращается в sing-box
+    // и не отвечает никогда («read udp …->127.0.0.53:53: i/o timeout»). Поэтому — сразу на DNS
+    // роутера/провайдера мимо туннеля.
+    let local_server = match s.local_dns.first() {
+        Some(ip) => json!({ "type": "udp", "tag": "dns-local", "server": ip.to_string() }),
+        None => json!({ "type": "local", "tag": "dns-local" }),
+    };
     let mut cfg = json!({
         "log": { "level": s.log_level, "timestamp": true },
         "dns": {
-            "servers": [ remote_server, { "type": "local", "tag": "dns-local" } ],
+            "servers": [ remote_server, local_server ],
             "rules": dns_rules,
             "final": dns_final,
             "strategy": if s.ipv6 { "prefer_ipv4" } else { "ipv4_only" },
@@ -248,6 +261,30 @@ fn host_cidr(ip: std::net::IpAddr) -> String {
 
 /// Адреса сервера через системный DNS (до запуска туннеля). Пусто, если в профиле уже IP
 /// или DNS сейчас недоступен.
+/// Linux: если система спрашивает DNS у заглушки systemd-resolved (127.0.0.53), — настоящие
+/// DNS-серверы сети из /run/systemd/resolve/resolv.conf (без своих адресов TUN и 127.x).
+/// Вызывать до подключения. Пусто — заглушки нет или серверов не нашли.
+pub fn linux_upstream_dns() -> Vec<std::net::IpAddr> {
+    if !cfg!(target_os = "linux") {
+        return Vec::new();
+    }
+    let servers = |path: &str| -> Vec<std::net::IpAddr> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("nameserver"))
+            .filter_map(|ip| ip.trim().split('%').next()?.parse().ok())
+            .collect()
+    };
+    let system = servers("/etc/resolv.conf");
+    if !system.iter().any(|ip| ip.is_loopback()) {
+        return Vec::new(); // обычные серверы — «local» и так работает
+    }
+    // Свой TUN (172.19.0.0/30) — его DNS тоже попадает в этот файл, пока VPN включён.
+    let ours = |ip: &std::net::IpAddr| matches!(ip, std::net::IpAddr::V4(v) if v.octets()[..3] == [172, 19, 0]);
+    servers("/run/systemd/resolve/resolv.conf").into_iter().filter(|ip| !ip.is_loopback() && !ours(ip)).collect()
+}
+
 pub fn resolve_server(host: &str, port: u16) -> Vec<std::net::IpAddr> {
     use std::net::ToSocketAddrs;
     if host.parse::<std::net::IpAddr>().is_ok() {
