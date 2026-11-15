@@ -90,6 +90,48 @@ pub fn nft_script(tcp: &str, udp: &str) -> String {
 
 // ================================================================ помощник (root)
 
+/// Куда помощник копирует списки и файлы стратегии для nfqws (tmpfs, доступно root без особых прав).
+const STAGE_DIR: &str = "/run/foxray-zapret";
+
+/// Скопировать файлы из аргументов (`--hostlist=/home/…/list.txt`, `--dpi-desync-fake-tls=/…/x.bin`)
+/// в `dir` и подставить новые пути. Остальные аргументы — как есть.
+fn stage_files(args: &[String], dir: &Path) -> Vec<String> {
+    let _ = std::fs::remove_dir_all(dir);
+    if std::fs::create_dir_all(dir).is_err() {
+        return args.to_vec();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755));
+    }
+    let mut copied: Vec<(String, String)> = Vec::new();
+    args.iter()
+        .map(|a| {
+            let Some((k, v)) = a.split_once('=') else { return a.clone() };
+            if !v.starts_with('/') || !Path::new(v).is_file() {
+                return a.clone();
+            }
+            if let Some((_, d)) = copied.iter().find(|(src, _)| src == v) {
+                return format!("{k}={d}");
+            }
+            let name = Path::new(v).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let dst = dir.join(format!("{}-{name}", copied.len()));
+            if std::fs::copy(v, &dst).is_err() {
+                return a.clone();
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644));
+            }
+            let d = dst.to_string_lossy().to_string();
+            copied.push((v.to_string(), d.clone()));
+            format!("{k}={d}")
+        })
+        .collect()
+}
+
 fn send(out: &Arc<Mutex<std::io::Stdout>>, v: serde_json::Value) {
     let mut o = out.lock().unwrap();
     let _ = writeln!(o, "{v}");
@@ -159,6 +201,10 @@ pub fn helper_main() -> i32 {
                         return Err("неверные порты".into());
                     }
                     nft(&nft_script(tcp, udp))?;
+                    // Списки и .bin — в /run: после старта nfqws сбрасывает права и проверяет,
+                    // что может перечитать файлы, а домашняя папка (0700/0750) ему уже закрыта
+                    // («file_open_test: Permission denied» — и nfqws сразу выходит).
+                    let args = stage_files(&args, Path::new(STAGE_DIR));
                     let mut c = Command::new(nfqws)
                         .arg(format!("--qnum={QNUM}"))
                         // Остаёмся root: файлы стратегий лежат в домашней папке, «nobody» их не прочитает.
@@ -259,18 +305,40 @@ pub fn helper_start() -> Result<(), String> {
     if helper_ready() {
         return Ok(());
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = crate::sys::self_exe().map_err(|e| e.to_string())?;
+    if !exe.exists() {
+        return Err(format!("не найден файл Foxray ({}) — перезапусти Foxray", exe.display()));
+    }
+    // Одно окно пароля за раз (см. sys::PKEXEC_LOCK) — держим, пока помощник не ответит.
+    let _one = crate::sys::PKEXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let pkexec = find_tool("pkexec").ok_or("нет pkexec — zapret в Linux нужны права root")?;
     let mut child = Command::new(pkexec)
         .arg(&exe)
         .arg("--zapret-helper")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("pkexec: {e}"))?;
     let stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
+    // Что пишет pkexec (почему отказал) — покажем в ошибке.
+    let errtext = Arc::new(Mutex::new(String::new()));
+    {
+        let errtext = errtext.clone();
+        let stderr = child.stderr.take().unwrap();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut e = errtext.lock().unwrap();
+                if e.len() < 600 {
+                    if !e.is_empty() {
+                        e.push_str("; ");
+                    }
+                    e.push_str(line.trim());
+                }
+            }
+        });
+    }
     let (tx, rx) = mpsc::channel::<serde_json::Value>();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -314,6 +382,18 @@ pub fn helper_start() -> Result<(), String> {
             Ok(())
         }
         Ok(v) => Err(format!("помощник: {v}")),
+        // Помощник закрылся сразу: pkexec отказал (отмена, нет агента polkit, ошибка запуска).
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let code = child.wait().ok().and_then(|s| s.code());
+            std::thread::sleep(Duration::from_millis(100));
+            let err = errtext.lock().unwrap().clone();
+            Err(match code {
+                Some(126) if err.is_empty() => "пароль не введён (окно закрыли) — без прав root zapret в Linux не работает".into(),
+                Some(127) if err.is_empty() => "система не дала права root (polkit отказал)".into(),
+                _ if !err.is_empty() => format!("pkexec: {err}"),
+                c => format!("помощник zapret не запустился (код {})", c.map_or("?".into(), |c| c.to_string())),
+            })
+        }
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
@@ -449,6 +529,27 @@ pub fn download_nfqws(dir: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_staged() {
+        let src = std::env::temp_dir().join("foxray-stage-src");
+        let dst = std::env::temp_dir().join("foxray-stage-dst");
+        let _ = std::fs::create_dir_all(&src);
+        let f = src.join("list-general.txt");
+        std::fs::write(&f, "discord.com\n").unwrap();
+        let f = f.to_string_lossy().to_string();
+        let a = vec![format!("--hostlist={f}"), "--new".into(), format!("--hostlist-exclude={f}"), "--dpi-desync-fake-tls=^!".into(), "--hostlist=/nope.txt".into()];
+        let out = stage_files(&a, &dst);
+        let d = dst.join("0-list-general.txt").to_string_lossy().to_string();
+        assert_eq!(out[0], format!("--hostlist={d}"));
+        assert_eq!(out[2], format!("--hostlist-exclude={d}"));
+        assert_eq!(out[1], "--new");
+        assert_eq!(out[3], "--dpi-desync-fake-tls=^!");
+        assert_eq!(out[4], "--hostlist=/nope.txt");
+        assert_eq!(std::fs::read_to_string(dst.join("0-list-general.txt")).unwrap(), "discord.com\n");
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
 
     #[test]
     fn plan_strips_windivert() {

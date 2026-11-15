@@ -2,6 +2,24 @@
 
 use std::process::Command;
 
+/// Окна пароля (pkexec) — по одному. Агент polkit в Xfce и др. не умеет показывать два запроса
+/// сразу: второй (права sing-box при подключении + помощник zapret) отменяет первый — окно мигает
+/// и пропадает. Держать замок, пока пользователь вводит пароль.
+pub static PKEXEC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Путь к файлу Foxray для запуска самого себя (pkexec). Если запущенный файл переименован
+/// обновлением (foxray.old) или удалён, берём настоящий рядом.
+pub fn self_exe() -> std::io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    let s = exe.to_string_lossy().to_string();
+    let mut t = s.trim_end_matches(" (deleted)");
+    while let Some(x) = t.strip_suffix(".old") {
+        t = x;
+    }
+    let real = std::path::PathBuf::from(t);
+    Ok(if real.exists() { real } else { exe })
+}
+
 pub fn hide_window(cmd: &mut Command) {
     #[cfg(windows)]
     {
@@ -235,7 +253,8 @@ pub mod tun_rights {
         if caps && find("setcap").is_none() {
             return Err(format!("нет программы setcap (пакет libcap2-bin). Потом: {manual}"));
         }
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe = super::self_exe().map_err(|e| e.to_string())?;
+        let _one = super::PKEXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut cmd = Command::new(pkexec);
         cmd.arg(exe).arg("--setup-rights").arg(singbox);
         if caps {
