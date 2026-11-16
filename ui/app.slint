@@ -1360,6 +1360,9 @@ export component AppWindow inherits Window {
     in property <[ConnRow]> conn-rows;
     in property <string> conn-title;
     in property <string> conn-note;
+    // VPN выключен — соединения из системы (без доменов, трафика и закрытия).
+    in property <bool> conn-system: false;
+    in property <bool> conn-zapret: false;
     callback open-conns();
     callback close-conns();
     callback conn-search(string);
@@ -1706,7 +1709,8 @@ export component AppWindow inherits Window {
                             }
                             Rectangle { horizontal-stretch: 1; }
                             // «N соединений ›» — список соединений.
-                            if root.state == 2 && root.conns != "—": VerticalLayout {
+                            // Без VPN, но с zapret — соединения из системы.
+                            if (root.state == 2 && root.conns != "—") || (root.state != 1 && root.state != 2 && root.zapret-enabled): VerticalLayout {
                                 alignment: center;
                                 Rectangle {
                                     height: 22px;
@@ -1719,7 +1723,7 @@ export component AppWindow inherits Window {
                                         padding-left: 8px;
                                         padding-right: 4px;
                                         spacing: 2px;
-                                        Text { text: root.conns; font-size: 11.5px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                                        Text { text: root.state == 2 ? root.conns : "Соединения"; font-size: 11.5px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
                                         VerticalLayout { alignment: center; Icon { width: 12px; height: 12px; commands: Icons.right; tint: cca.has-hover ? Theme.text : Theme.muted; } }
                                     }
                                 }
@@ -1802,13 +1806,13 @@ export component AppWindow inherits Window {
                     Text { text: "Соединения"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
                     VerticalLayout {
                         alignment: center;
-                        InfoDot { tip: "Все соединения, открытые сейчас через Foxray. Обновляется каждую секунду, сверху — те, что прокачали больше всего.\n\nМетка справа — куда пошло: VPN, zapret или напрямую. Крестик закрывает соединение (программа обычно сразу откроет новое — так можно проверить, куда оно пойдёт после смены правил)."; }
+                        InfoDot { tip: root.conn-system ? "VPN выключен — соединения берутся из системы: видны программа, адрес и порт, но без доменов и трафика. Время — сколько соединение открыто с момента, как ты открыл страницу.\n\nzapret — Discord, игры из «Zapret → Игры» и адреса из «Своих сайтов».\nнапрямую — всё остальное. Сайты из списков zapret в браузере (YouTube и т. п.) тоже могут быть здесь: zapret узнаёт их по домену, а система его не знает.\n\n«UDP-сокет» — программа отправляет UDP на разные адреса (игры, голос), куда именно — система не показывает.\n\nПодключи VPN — будут домены, трафик и крестик закрытия." : "Все соединения, открытые сейчас через Foxray. Обновляется каждую секунду, сверху — те, что прокачали больше всего.\n\nМетка справа — куда пошло: VPN, zapret или напрямую. Крестик закрывает соединение (программа обычно сразу откроет новое — так можно проверить, куда оно пойдёт после смены правил)."; }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    if root.conn-title != "": VerticalLayout { alignment: center; Chip { text: root.conn-title; font-size: 11.5px; } }
+                    if root.conn-title != "": VerticalLayout { alignment: center; Chip { text: root.conn-title; font-size: 11.5px; tint: root.conn-zapret ? Theme.zap : transparent; } }
                 }
                 Field {
-                    placeholder-text: "Поиск: сайт, программа, VPN, zapret…";
+                    placeholder-text: root.conn-system ? "Поиск: адрес, программа, порт, zapret…" : "Поиск: сайт, программа, VPN, zapret…";
                     edited(t) => { root.conn-search(t); }
                 }
                 if root.conn-note != "": VerticalLayout {
@@ -1877,7 +1881,7 @@ export component AppWindow inherits Window {
                                         }
                                         // Крестик выезжает при наведении и отодвигает метки влево.
                                         Rectangle {
-                                            width: crow.has-hover ? 26px : 0px;
+                                            width: crow.has-hover && !root.conn-system ? 26px : 0px;
                                             animate width { duration: 120ms; easing: ease-out; }
                                             clip: true;
                                             Rectangle {
@@ -1904,9 +1908,9 @@ export component AppWindow inherits Window {
                                     }
                                     // Один TouchArea на строку: и наведение, и нажатие на крестик.
                                     crow := TouchArea {
-                                        mouse-cursor: self.has-hover && self.mouse-x > self.width - 36px ? pointer : default;
+                                        mouse-cursor: self.has-hover && !root.conn-system && self.mouse-x > self.width - 36px ? pointer : default;
                                         clicked => {
-                                            if self.mouse-x > self.width - 36px { root.conn-close(c.id); }
+                                            if !root.conn-system && self.mouse-x > self.width - 36px { root.conn-close(c.id); }
                                         }
                                     }
                                 }

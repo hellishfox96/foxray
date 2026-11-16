@@ -1,8 +1,11 @@
 //! Страница «Соединения»: что сейчас открыто через Foxray и куда оно пошло.
 //! Данные — из Clash API sing-box (/connections), раз в секунду, в фоновом потоке.
+//! VPN выключен — из системы (foxray::sysconns): программа, адрес и порт, без доменов и трафика.
 
 use super::*;
 use foxray::runner::{self, Conn};
+use foxray::sysconns::{self, SysConn};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use slint::Model;
 use std::rc::Rc;
@@ -24,6 +27,10 @@ pub(super) struct ConnState {
     zap: ZapMatch,
     /// Соединения из последней статистики (каждые 2 с, пока подключены) — для «Трафика» на главной.
     pub(super) home: Vec<Conn>,
+    /// VPN выключен: соединения из системы.
+    sys: Option<Vec<SysConn>>,
+    /// Когда соединение из системы впервые увидели (ключ — SysConn::key).
+    sys_seen: HashMap<String, Instant>,
 }
 
 pub(super) fn setup(ui: &AppWindow) {
@@ -57,6 +64,28 @@ pub(super) struct ZapMatch {
     suffix: Vec<String>,
     full: Vec<String>,
     procs: Vec<String>,
+    /// Адреса из «Своих сайтов» (для соединений из системы — там нет доменов).
+    cidrs: Vec<(IpAddr, u8)>,
+    /// Программы игр («Zapret → Игры»).
+    games: Vec<String>,
+}
+
+/// «104.16.0.0/13», «1.2.3.4», «ip:…» → (адрес, длина префикса).
+fn parse_cidr(e: &str) -> Option<(IpAddr, u8)> {
+    let e = e.strip_prefix("ip:").unwrap_or(e);
+    let (a, n) = e.split_once('/').unwrap_or((e, ""));
+    let ip: IpAddr = a.trim().parse().ok()?;
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    let n = if n.is_empty() { max } else { n.trim().parse().ok()? };
+    (n <= max).then_some((ip, n))
+}
+
+fn in_cidr(ip: IpAddr, (net, n): (IpAddr, u8)) -> bool {
+    match (ip, net) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => n == 0 || (u32::from(a) ^ u32::from(b)) >> (32 - n as u32) == 0,
+        (IpAddr::V6(a), IpAddr::V6(b)) => n == 0 || (u128::from(a) ^ u128::from(b)) >> (128 - n as u32) == 0,
+        _ => false,
+    }
 }
 
 impl ZapMatch {
@@ -71,14 +100,31 @@ impl ZapMatch {
                     z.procs.push(p.to_string());
                 } else if e.to_ascii_lowercase().ends_with(".exe") {
                     z.procs.push(e.clone());
-                } else if e.contains(':') || e.contains('/') || e.parse::<std::net::IpAddr>().is_ok() {
-                    // наборы и адреса по имени хоста не сравнить — пропускаем
+                } else if let Some(c) = parse_cidr(&e) {
+                    z.cidrs.push(c);
+                } else if e.contains(':') || e.contains('/') {
+                    // наборы по имени хоста не сравнить — пропускаем
                 } else {
                     z.suffix.push(e.to_ascii_lowercase());
                 }
             }
         }
+        z.games = zap::game_procs();
         z
+    }
+
+    /// Соединение из системы: (1 zapret, 2 напрямую) и подпись.
+    fn classify_sys(&self, c: &SysConn) -> (i32, &'static str) {
+        let named = |list: &[String]| {
+            list.iter().any(|p| p.eq_ignore_ascii_case(&c.exe) || p.eq_ignore_ascii_case(&c.process))
+        };
+        if named(&self.games) {
+            (1, "zapret · игра")
+        } else if named(&self.procs) || c.remote.is_some_and(|(ip, _)| self.cidrs.iter().any(|n| in_cidr(ip, *n))) {
+            (1, "zapret")
+        } else {
+            (2, "напрямую")
+        }
     }
 
     fn is_zap(&self, c: &Conn) -> bool {
@@ -113,6 +159,8 @@ fn open(ui: &AppWindow) {
         app.conns.watch = Some(flag.clone());
         app.conns.zap = zm;
         app.conns.last = None;
+        app.conns.sys = None;
+        app.conns.sys_seen.clear();
     });
     ui.set_home_view(1);
     render(ui);
@@ -128,13 +176,25 @@ fn open(ui: &AppWindow) {
                 rx.recv_timeout(Duration::from_secs(2)).unwrap_or(0)
             };
             let list = if port != 0 { runner::connections(port) } else { None };
+            let sys = if port == 0 { Some(sysconns::list()) } else { None };
             let w2 = w.clone();
             let f2 = flag.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if !f2.load(Ordering::SeqCst) {
                     return;
                 }
-                with_app(|app| app.conns.last = list);
+                with_app(|app| {
+                    app.conns.last = list;
+                    if let Some(s) = &sys {
+                        let now = Instant::now();
+                        let keys: HashSet<String> = s.iter().map(|c| c.key()).collect();
+                        app.conns.sys_seen.retain(|k, _| keys.contains(k));
+                        for k in keys {
+                            app.conns.sys_seen.entry(k).or_insert(now);
+                        }
+                    }
+                    app.conns.sys = sys;
+                });
                 if let Some(ui) = w2.upgrade() {
                     render(&ui);
                 }
@@ -150,6 +210,7 @@ fn close(ui: &AppWindow) {
             f.store(false, Ordering::SeqCst);
         }
         app.conns.last = None;
+        app.conns.sys = None;
     });
     ui.set_home_view(0);
 }
@@ -171,7 +232,9 @@ fn age(secs: u64) -> String {
 }
 
 fn render(ui: &AppWindow) {
-    let (rows, title, note) = with_app(|app| {
+    let system = with_app(|app| app.conns.last.is_none() && app.conns.sys.is_some());
+    let zapret_on = zap::routing_active();
+    let (rows, title, note) = if system { render_sys(zapret_on) } else { with_app(|app| {
         let st = &app.conns;
         let Some(list) = st.last.as_ref() else {
             let note = if st.api_port == 0 {
@@ -240,7 +303,9 @@ fn render(ui: &AppWindow) {
         }
         let note = if total == 0 { "Открытых соединений нет.".to_string() } else { String::new() };
         (rows, title, note)
-    });
+    }) };
+    ui.set_conn_system(system);
+    ui.set_conn_zapret(system && zapret_on);
     // Обновляем строки на месте, а не новой моделью: иначе Slint пересоздаёт строки каждую
     // секунду и теряется наведение (крестик бы мигал).
     MODEL.with(|m| {
@@ -264,4 +329,77 @@ fn render(ui: &AppWindow) {
     });
     ui.set_conn_title(title.into());
     ui.set_conn_note(note.into());
+}
+
+/// Строки страницы из соединений системы (VPN выключен).
+fn render_sys(zapret_on: bool) -> (Vec<ConnRow>, String, String) {
+    with_app(|app| {
+        let st = &app.conns;
+        let list = st.sys.as_deref().unwrap_or_default();
+        let q = st.search.trim().to_lowercase();
+        let now = Instant::now();
+        let mut items: Vec<(&SysConn, i32, &str)> = list
+            .iter()
+            .map(|c| {
+                let (kind, route) = st.zap.classify_sys(c);
+                (c, kind, route)
+            })
+            // UDP без адреса — только у Discord и игр (иначе браузер даёт десятки пустых строк).
+            .filter(|(c, kind, _)| c.remote.is_some() || *kind == 1)
+            .filter(|(c, _, route)| {
+                q.is_empty()
+                    || c.process.to_lowercase().contains(&q)
+                    || c.exe.to_lowercase().contains(&q)
+                    || route.to_lowercase().contains(&q)
+                    || c.remote.is_some_and(|(ip, p)| format!("{ip}:{p}").contains(&q))
+                    || format!("{}:{}", c.network, c.remote.map_or(c.local_port, |r| r.1)).contains(&q)
+            })
+            .collect();
+        let total = items.len();
+        let all = list.iter().filter(|c| c.remote.is_some() || st.zap.classify_sys(c).0 == 1).count();
+        let shown = if q.is_empty() { format!("{all}") } else { format!("{total} из {all}") };
+        let title = format!("{} · {shown}", if zapret_on { "только zapret" } else { "без VPN" });
+        // Группы по программе: сверху zapret (игры, Discord), потом самые многочисленные.
+        items.sort_by(|a, b| a.0.remote.is_none().cmp(&b.0.remote.is_none()).then(a.0.remote.cmp(&b.0.remote)));
+        let mut groups: Vec<(String, i32, Vec<(&SysConn, i32, &str)>)> = Vec::new();
+        for it in items {
+            let name = if it.0.process.is_empty() { "ДРУГОЕ".to_string() } else { it.0.process.to_uppercase() };
+            match groups.iter_mut().find(|g| g.0 == name) {
+                Some(g) => {
+                    g.1 = g.1.min(it.1);
+                    g.2.push(it);
+                }
+                None => groups.push((name, it.1, vec![it])),
+            }
+        }
+        groups.sort_by(|a, b| a.1.cmp(&b.1).then(b.2.len().cmp(&a.2.len())).then(a.0.cmp(&b.0)));
+        let mut rows: Vec<ConnRow> = Vec::new();
+        for (name, _, list) in groups {
+            rows.push(ConnRow { host: format!("{name} · {}", list.len()).into(), header: true, ..Default::default() });
+            let n = list.len();
+            for (k, (c, kind, route)) in list.into_iter().enumerate() {
+                let secs = st.sys_seen.get(&c.key()).map(|t| now.duration_since(*t).as_secs()).unwrap_or(0);
+                let (host, sub) = match c.remote {
+                    Some((ip, port)) => (
+                        ip.to_string(),
+                        format!("{}:{port} · {}", c.network.to_uppercase(), if c.connecting { "подключается…".to_string() } else { age(secs) }),
+                    ),
+                    None => ("UDP-сокет".to_string(), format!("локальный порт {} · {}", c.local_port, age(secs))),
+                };
+                rows.push(ConnRow {
+                    id: c.key().into(),
+                    host: host.into(),
+                    sub: sub.into(),
+                    route: route.into(),
+                    traffic: SharedString::new(),
+                    kind,
+                    header: false,
+                    first: k == 0,
+                    last: k + 1 == n,
+                });
+            }
+        }
+        let note = if all == 0 { "Открытых соединений нет.".to_string() } else { String::new() };
+        (rows, title, note)
+    })
 }

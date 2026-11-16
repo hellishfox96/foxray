@@ -112,6 +112,18 @@ fn games_changed(ui: &AppWindow) {
     refresh(ui);
 }
 
+/// Программы игр, которые сейчас идут через zapret (для меток в «Соединениях»).
+pub(super) fn game_procs() -> Vec<String> {
+    if !routing_active() || !with_app(|app| app.settings.zapret_games_on) {
+        return Vec::new();
+    }
+    with_app(|app| app.settings.zapret_games.clone())
+        .iter()
+        .flat_map(|g| game_entries(g))
+        .map(|e| e.strip_prefix("process:").unwrap_or(&e).to_string())
+        .collect()
+}
+
 pub(super) fn add_game(ui: &AppWindow, item: String) {
     let added = with_app(|app| {
         if app.settings.zapret_games.contains(&item) {

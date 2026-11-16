@@ -6,6 +6,7 @@ pub mod store;
 pub mod subs;
 pub mod net;
 pub mod sys;
+pub mod sysconns;
 pub mod geo;
 pub mod zapret;
 pub mod update;
