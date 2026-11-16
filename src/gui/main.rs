@@ -2424,11 +2424,18 @@ fn setup_rules(ui: &AppWindow) {
         } else {
             format!("process:{name}")
         };
+        if zap::take_pick_game() {
+            zap::add_game(&ui, name);
+            return;
+        }
         add_entries(&ui, &name);
     });
 
     let w = ui.as_weak();
-    ui.on_close_picker(move || w.unwrap().set_picking(false));
+    ui.on_close_picker(move || {
+        zap::take_pick_game();
+        w.unwrap().set_picking(false)
+    });
 
     // Выбор готового набора.
     let w = ui.as_weak();

@@ -173,6 +173,7 @@ global Icons {
     out property <string> dash: "M7.5 12 L16.5 12";
     out property <string> cross-small: "M8.5 8.5 L15.5 15.5 M15.5 8.5 L8.5 15.5"; // по нижнему краю крестика, как в Windows
     out property <string> monitor: "M4 5 L20 5 L20 16 L4 16 Z M8 20 L16 20 M12 16 L12 20 M10 8.5 L13 10.5 L10 12.5";
+    out property <string> gamepad: "M7.5 7.5 L16.5 7.5 A4.5 4.5 0 0 1 21 12 L21 14.5 A3 3 0 0 1 15.8 16.4 L14.6 15 L9.4 15 L8.2 16.4 A3 3 0 0 1 3 14.5 L3 12 A4.5 4.5 0 0 1 7.5 7.5 Z M7.5 10 L7.5 13 M6 11.5 L9 11.5 M15.5 10.8 L15.5 10.9 M17.3 12.5 L17.3 12.6";
     out property <string> file: "M6 3 L14 3 L19 8 L19 21 L6 21 Z M14 3 L14 8 L19 8";
 }
 
@@ -1437,7 +1438,7 @@ export component AppWindow inherits Window {
     callback close-picker();
 
     // ---- Настройки ----
-    in-out property <int> settings-view: 0; // 0 — настройки, 1 — журнал, 2 — zapret, 3 — обновление
+    in-out property <int> settings-view: 0; // 0 — настройки, 1 — журнал, 2 — zapret, 3 — обновление, 4 — zapret: игры
     /// Страницу zapret открыли с главной — «назад» ведёт на главную.
     in-out property <bool> zapret-from-home: false;
     /// Список правил открыли с главной (строка zapret в «Трафике») — «назад» ведёт на главную.
@@ -1492,6 +1493,17 @@ export component AppWindow inherits Window {
     in property <int> zapret-test-total;
     in property <string> zapret-test-title;
     in property <string> zapret-user-sub;
+    // Zapret → Игры
+    in property <bool> games-on;
+    in property <string> games-sub;
+    in property <[EntryItem]> game-rows;
+    in property <[EntryItem]> game-presets;
+    in-out property <bool> picking-game: false;
+    callback games-toggled(bool);
+    callback games-pick-process();
+    callback games-open-presets();
+    callback games-preset-chosen(int);
+    callback games-remove(int);
     callback zapret-toggle-more();
     callback open-zapret-list();
     callback update-check();
@@ -2569,6 +2581,70 @@ export component AppWindow inherits Window {
             }
 
             // ---------- Zapret ----------
+            if root.tab == 3 && root.settings-view == 4: Page {
+ gsv := ScrollView {
+                VerticalLayout {
+                    width: gsv.visible-width;
+                    padding: 16px;
+                    padding-top: 8px;
+                    padding-bottom: 40px;
+                    spacing: 12px;
+                    alignment: start;
+
+                    VerticalLayout {
+                        spacing: 10px;
+                        Back { text: "Zapret"; clicked => { root.settings-view = 2; } }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            Text { text: "Игры"; font-size: 21px; font-weight: 700; color: Theme.text; vertical-alignment: center; }
+                            VerticalLayout {
+                                alignment: center;
+                                InfoDot { tip: "Для игр, у которых без VPN не отвечают сервера или выкидывает из матча.\n\nИгры из списка идут мимо VPN, а zapret обрабатывает их подключения на игровых портах (Game Filter сборки). Discord и YouTube работают как раньше.\n\nПомогает не всем играм: если сервер заблокирован по адресу, оставь игру через VPN — лучше через Hysteria2, у неё пинг ниже."; }
+                            }
+                        }
+                    }
+
+                    Card {
+                        IRow {
+                            first: true;
+                            last: true;
+                            icon: Icons.gamepad;
+                            tint: root.games-on ? Theme.zap : Theme.muted;
+                            title: "Игровые порты через zapret";
+                            subtitle: root.games-on ? "TCP и UDP 1024–65535 · Game Filter" : "выключено — игры идут как всё остальное";
+                            VerticalLayout { alignment: center; Switch { on: root.games-on; on-color: Theme.zap; toggled(v) => { root.games-toggled(v); } } }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 6px;
+                        padding-top: 4px;
+                        Section { text: "ИГРЫ МИМО VPN"; }
+                        if root.game-rows.length == 0: Text {
+                            text: "Пока пусто — добавь игру кнопками ниже.";
+                            color: Theme.dim;
+                            font-size: 12px;
+                        }
+                        VerticalLayout {
+                            opacity: root.games-on ? 1 : 0.55;
+                            for g[i] in root.game-rows: EntryRow {
+                                item: g;
+                                remove => { root.games-remove(i); }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button2 { text: "Программа"; icon: Icons.app; horizontal-stretch: 1; clicked => { root.games-pick-process(); } }
+                        Button2 { text: "Из списка игр"; icon: Icons.layers; horizontal-stretch: 1; clicked => { root.games-open-presets(); } }
+                    }
+                    if !root.zapret-enabled: Hint { text: "Zapret выключен — игры из списка идут как всё остальное."; bad: false; }
+                }
+            }
+            }
+
             if root.tab == 3 && root.settings-view == 2: Page {
  zsv := ScrollView {
                 VerticalLayout {
@@ -2638,16 +2714,27 @@ export component AppWindow inherits Window {
                     if root.zapret-status != "": Hint { text: root.zapret-status; bad: root.zapret-status-bad; }
 
                     Card {
-                        IRow {
-                            first: true;
-                            last: true;
-                            clickable: true;
-                            icon: Icons.star;
-                            tint: Theme.zap;
-                            title: "Свои сайты";
-                            subtitle: root.zapret-user-sub;
-                            clicked => { root.open-zapret-list(); }
-                            Chevron { }
+                        VerticalLayout {
+                            IRow {
+                                first: true;
+                                clickable: true;
+                                icon: Icons.star;
+                                tint: Theme.zap;
+                                title: "Свои сайты";
+                                subtitle: root.zapret-user-sub;
+                                clicked => { root.open-zapret-list(); }
+                                Chevron { }
+                            }
+                            IRow {
+                                last: true;
+                                clickable: true;
+                                icon: Icons.gamepad;
+                                tint: Theme.zap;
+                                title: "Игры";
+                                subtitle: root.games-sub;
+                                clicked => { root.settings-view = 4; }
+                                Chevron { }
+                            }
                         }
                     }
 
@@ -3059,6 +3146,67 @@ export component AppWindow inherits Window {
     }
 
     // ================= Выбор программы =================
+    if root.picking-game: Rectangle {
+        background: #000000a0;
+        opacity: 0;
+        init => { self.opacity = 1; }
+        animate opacity { duration: 160ms; }
+        TouchArea { clicked => { root.picking-game = false; } }
+        Rectangle {
+            x: 16px;
+            y: 120px;
+            width: parent.width - 32px;
+            height: gpl.preferred-height;
+            border-radius: 14px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.line;
+            TouchArea { }
+            gpl := VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+                HorizontalLayout {
+                    Text { text: "Игры"; font-size: 15px; font-weight: 600; color: Theme.text; horizontal-stretch: 1; vertical-alignment: center; }
+                    GhostIcon { icon: Icons.close; clicked => { root.picking-game = false; } }
+                }
+                for g[i] in root.game-presets: Rectangle {
+                    height: 48px;
+                    border-radius: 8px;
+                    background: g.icon == 0 && gta.has-hover ? Theme.card2 : transparent;
+                    animate background { duration: 120ms; }
+                    gta := TouchArea {
+                        enabled: g.icon == 0;
+                        mouse-cursor: pointer;
+                        clicked => { root.games-preset-chosen(i); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 10px;
+                        VerticalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: 28px;
+                                height: 28px;
+                                border-radius: 8px;
+                                background: #a970ff24;
+                                Icon { width: 14px; height: 14px; commands: Icons.gamepad; tint: g.icon == 0 ? Theme.zap : Theme.dim; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 2px;
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            Text { text: g.text; color: g.icon == 0 ? Theme.text : Theme.dim; font-size: 13px; overflow: elide; }
+                            Text { text: g.kind; color: Theme.dim; font-size: 10.5px; overflow: elide; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if root.picking: Rectangle {
         background: #000000a0;
         opacity: 0;

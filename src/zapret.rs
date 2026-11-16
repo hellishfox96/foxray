@@ -137,7 +137,8 @@ pub fn ensure_user_lists(dir: &Path) {
     }
 }
 
-/// Записать файл исключений (адреса VPN-сервера). Пустой файл winws не любит — тогда заглушка.
+/// Записать файл исключений: адреса VPN-сервера и локальная сеть (zapret там не нужен,
+/// а игровые порты без исключения задели бы игры по локалке, NAS и т. п.).
 pub fn write_exclude(dir: &Path, ips: &[IpAddr]) -> PathBuf {
     let p = dir.join("lists").join(EXCLUDE_FILE);
     let mut text: String = ips
@@ -147,8 +148,9 @@ pub fn write_exclude(dir: &Path, ips: &[IpAddr]) -> PathBuf {
             IpAddr::V6(v) => format!("{v}/128\n"),
         })
         .collect();
-    if text.is_empty() {
-        text = "203.0.113.113/32\n".into();
+    for r in crate::config::LAN_RANGES {
+        text += r;
+        text.push('\n');
     }
     let _ = std::fs::write(&p, text);
     p
@@ -163,7 +165,12 @@ pub struct Extra<'a> {
     pub hostlist: Option<&'a Path>,
     /// Добавляется к каждому --ipset=…ipset-all.txt.
     pub ipset: Option<&'a Path>,
+    /// Игровые порты (Game Filter сборки): 1024–65535 TCP/UDP, на любые адреса (см. `split_games`).
+    pub games: bool,
 }
+
+/// Порты Game Filter — как в service.bat сборки Flowseal.
+pub const GAME_PORTS: &str = "1024-65535";
 
 /// Аргументы winws из .bat-стратегии со своими файлами Foxray (см. Extra).
 pub fn parse_bat(text: &str, dir: &Path, extra: Extra) -> Result<Vec<String>, String> {
@@ -189,14 +196,15 @@ pub fn parse_bat(text: &str, dir: &Path, extra: Extra) -> Result<Vec<String>, St
     let lists = format!("{}{sep}", dir.join("lists").display());
     let root = format!("{}{sep}", dir.display());
     let mut rest = line[pos..].to_string();
+    // Game Filter выключен (как по умолчанию в service.bat): порт-заглушка 12.
+    let game = if extra.games { GAME_PORTS } else { "12" };
     for (k, v) in [
         ("%BIN%", bin.as_str()),
         ("%LISTS%", lists.as_str()),
         ("%~dp0", root.as_str()),
-        // Game Filter выключен (как по умолчанию в service.bat): порт-заглушка 12.
-        ("%GameFilterTCP%", "12"),
-        ("%GameFilterUDP%", "12"),
-        ("%GameFilter%", "12"),
+        ("%GameFilterTCP%", game),
+        ("%GameFilterUDP%", game),
+        ("%GameFilter%", game),
     ] {
         rest = rest.replace(k, v);
     }
@@ -207,6 +215,9 @@ pub fn parse_bat(text: &str, dir: &Path, extra: Extra) -> Result<Vec<String>, St
     let mut args = split_args(&rest);
     if args.is_empty() {
         return Err("пустая строка запуска winws".into());
+    }
+    if extra.games {
+        args = split_games(args);
     }
     // Свой список — следом за пользовательским списком сборки: те же профили, те же настройки.
     // ipset-all.txt может быть пустым (режим «any» — все адреса), тогда свой ipset не добавляем:
@@ -239,6 +250,57 @@ pub fn parse_bat(text: &str, dir: &Path, extra: Extra) -> Result<Vec<String>, St
         args = out;
     }
     Ok(args)
+}
+
+/// Игровые порты — на любые адреса. В стратегиях сборки игровые порты стоят в профилях с
+/// --ipset=ipset-all.txt, а серверов игр в этом списке обычно нет (поэтому игры «не работают»).
+/// Профиль `--filter-udp=443,1024-65535 --ipset=…ipset-all.txt …` делится на два:
+/// `--filter-udp=443 --ipset=…ipset-all.txt …` (как был) и `--filter-udp=1024-65535 …` без ipset.
+/// Что идёт в zapret, решает маршрутизация Foxray (игры из списка — напрямую), адрес VPN-сервера
+/// и локальная сеть исключены (--ipset-exclude).
+fn split_games(args: Vec<String>) -> Vec<String> {
+    let is_all = |a: &str| a.starts_with("--ipset=") && a.ends_with("ipset-all.txt");
+    let mut profiles: Vec<Vec<String>> = vec![Vec::new()];
+    for a in args {
+        if a == "--new" {
+            profiles.push(Vec::new());
+        } else {
+            profiles.last_mut().unwrap().push(a);
+        }
+    }
+    let mut out_profiles: Vec<Vec<String>> = Vec::new();
+    for p in profiles {
+        let game_filter = p.iter().position(|a| {
+            (a.starts_with("--filter-tcp=") || a.starts_with("--filter-udp="))
+                && a.split_once('=').unwrap().1.split(',').any(|x| x == GAME_PORTS)
+        });
+        let (Some(fi), true) = (game_filter, p.iter().any(|a| is_all(a))) else {
+            out_profiles.push(p);
+            continue;
+        };
+        let (key, ports) = p[fi].split_once('=').unwrap();
+        let rest: Vec<&str> = ports.split(',').filter(|x| *x != GAME_PORTS).collect();
+        let game: Vec<String> = p
+            .iter()
+            .enumerate()
+            .filter(|(i, a)| *i == fi || !is_all(a))
+            .map(|(i, a)| if i == fi { format!("{key}={GAME_PORTS}") } else { a.clone() })
+            .collect();
+        if !rest.is_empty() {
+            let mut old = p.clone();
+            old[fi] = format!("{key}={}", rest.join(","));
+            out_profiles.push(old);
+        }
+        out_profiles.push(game);
+    }
+    let mut out = Vec::new();
+    for (i, p) in out_profiles.into_iter().enumerate() {
+        if i > 0 {
+            out.push("--new".to_string());
+        }
+        out.extend(p);
+    }
+    out
 }
 
 /// Пустой ipset (нет ни одного адреса) — zapret считает, что подходят все адреса.
@@ -813,7 +875,7 @@ mod tests {
         let (h, i) = write_user_lists(&dir, &UserLists { hosts: vec!["rutracker.org".into()], ips: vec![] });
         assert_eq!(std::fs::read_to_string(&h).unwrap(), "rutracker.org\n");
         assert_eq!(std::fs::read_to_string(&i).unwrap(), "203.0.113.113/32\n");
-        let extra = Extra { exclude: None, hostlist: Some(&h), ipset: Some(&i) };
+        let extra = Extra { exclude: None, hostlist: Some(&h), ipset: Some(&i), games: false };
         // ipset-all.txt — заглушка (режим «none»): свой ipset добавляется
         std::fs::write(dir.join("lists").join("ipset-all.txt"), "203.0.113.113/32\n").unwrap();
         let a = parse_bat(bat, &dir, extra).unwrap();
@@ -835,5 +897,30 @@ mod tests {
         let u = user_lists(&e, Path::new("."), None);
         assert_eq!(u.hosts, vec!["rutracker.org", "^x.com", "ya.ru"]);
         assert_eq!(u.ips, vec!["1.2.3.4/32"]);
+    }
+
+    #[test]
+    fn game_filter_splits_profiles() {
+        let dir = std::env::temp_dir().join("foxray-zap-games");
+        std::fs::create_dir_all(dir.join("lists")).unwrap();
+        std::fs::write(dir.join("lists").join("ipset-all.txt"), "1.2.3.0/24\n").unwrap();
+        let bat = "\"%BIN%winws.exe\" --wf-tcp=80,443,%GameFilter% --wf-udp=443,%GameFilter% ^\n--filter-udp=443 --hostlist=\"%LISTS%list-general.txt\" --dpi-desync=fake --new ^\n--filter-tcp=443,%GameFilter% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fakedsplit --new ^\n--filter-udp=%GameFilter% --ipset=\"%LISTS%ipset-all.txt\" --dpi-desync=fake --dpi-desync-cutoff=n2\n";
+        // Выключено — заглушка 12, ничего не делится.
+        let off = parse_bat(bat, &dir, Extra::default()).unwrap();
+        assert!(off.contains(&"--wf-tcp=80,443,12".to_string()));
+        assert_eq!(off.iter().filter(|a| *a == "--new").count(), 2);
+        // Включено: TCP-профиль делится на 443 (с ipset) и игровые порты (без ipset), UDP — без ipset.
+        let on = parse_bat(bat, &dir, Extra { games: true, ..Default::default() }).unwrap();
+        assert!(on.contains(&"--wf-udp=443,1024-65535".to_string()));
+        let profiles: Vec<Vec<String>> = on.split(|a| a == "--new").map(|p| p.to_vec()).collect();
+        assert_eq!(profiles.len(), 4, "{on:?}");
+        assert!(profiles[1].contains(&"--filter-tcp=443".to_string()));
+        assert!(profiles[1].iter().any(|a| a.ends_with("ipset-all.txt")));
+        assert!(profiles[2].contains(&"--filter-tcp=1024-65535".to_string()));
+        assert!(profiles[2].contains(&"--dpi-desync=fakedsplit".to_string()));
+        assert!(!profiles[2].iter().any(|a| a.starts_with("--ipset=")));
+        assert!(profiles[3].contains(&"--filter-udp=1024-65535".to_string()));
+        assert!(!profiles[3].iter().any(|a| a.starts_with("--ipset=")));
+        assert!(profiles[3].contains(&"--dpi-desync-cutoff=n2".to_string()));
     }
 }

@@ -38,6 +38,95 @@ pub(super) struct ZapState {
     user_gen: u64,
 }
 
+// ---------------------------------------------------------------- игры
+
+/// Готовая игра: как она называется и какие у неё программы.
+struct GamePreset {
+    id: &'static str,
+    title: &'static str,
+    procs: &'static [&'static str],
+}
+
+#[cfg(windows)]
+const GAME_PRESETS: &[GamePreset] = &[
+    GamePreset {
+        id: "dbd",
+        title: "Dead by Daylight",
+        procs: &["DeadByDaylight-Win64-Shipping.exe", "DeadByDaylight-EGS-Shipping.exe", "DeadByDaylight-WinGDK-Shipping.exe"],
+    },
+    GamePreset { id: "warframe", title: "Warframe", procs: &["Warframe.x64.exe"] },
+    GamePreset { id: "roblox", title: "Roblox", procs: &["RobloxPlayerBeta.exe"] },
+    GamePreset { id: "lol", title: "League of Legends", procs: &["League of Legends.exe", "LeagueClient.exe", "RiotClientServices.exe"] },
+];
+
+/// Linux: игры из Steam идут через Proton (Wine) — система видит не «Game.exe», а программу Wine.
+#[cfg(not(windows))]
+const GAME_PRESETS: &[GamePreset] = &[
+    GamePreset {
+        id: "proton",
+        title: "Игры через Proton / Wine",
+        procs: &["wine64-preloader", "wine-preloader", "wine64", "wine"],
+    },
+    GamePreset { id: "roblox", title: "Roblox (Sober)", procs: &["sober"] },
+];
+
+fn preset(id: &str) -> Option<&'static GamePreset> {
+    GAME_PRESETS.iter().find(|p| p.id == id)
+}
+
+/// Запись игры → записи правил (программы).
+fn game_entries(item: &str) -> Vec<String> {
+    match item.strip_prefix("preset:").and_then(preset) {
+        Some(p) => p.procs.iter().map(|x| format!("process:{x}")).collect(),
+        None if item.starts_with("preset:") => Vec::new(),
+        None => vec![item.to_string()],
+    }
+}
+
+/// Название и подпись строки игры.
+fn game_row(item: &str) -> (String, String) {
+    match item.strip_prefix("preset:").and_then(preset) {
+        Some(p) => (p.title.to_string(), p.procs.join(", ")),
+        None => (item.strip_prefix("process:").unwrap_or(item).to_string(), "программа".to_string()),
+    }
+}
+
+thread_local! {
+    /// Выбор запущенной программы открыт со страницы «Игры» (а не из списка правил).
+    static PICK_GAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Выбор программы был для «Игр»? (флаг сбрасывается)
+pub(super) fn take_pick_game() -> bool {
+    PICK_GAME.with(|c| c.replace(false))
+}
+
+/// Список игр поменялся — игры идут мимо VPN только при включённом zapret и игровых портах.
+fn games_changed(ui: &AppWindow) {
+    with_app(|app| {
+        let _ = app.store.save_settings(&app.settings);
+    });
+    if routing_active() && with_app(|app| app.settings.zapret_games_on && app.runner.is_some()) {
+        reconnect(ui);
+    }
+    refresh(ui);
+}
+
+pub(super) fn add_game(ui: &AppWindow, item: String) {
+    let added = with_app(|app| {
+        if app.settings.zapret_games.contains(&item) {
+            return false;
+        }
+        app.settings.zapret_games.push(item.clone());
+        true
+    });
+    if !added {
+        show_toast(ui, "Эта игра уже в списке");
+        return;
+    }
+    games_changed(ui);
+}
+
 /// Linux: zapret работает через помощника с правами root (pkexec, пароль — раз за запуск Foxray).
 /// true — помощник готов, можно запускать. false — спрашиваем пароль в фоне,
 /// по готовности снова вызовем `then`.
@@ -262,6 +351,71 @@ pub(super) fn setup(ui: &AppWindow) {
     ui.on_zapret_download(move || download(&w.unwrap()));
 
     let w = ui.as_weak();
+    ui.on_games_toggled(move |on| {
+        let ui = w.unwrap();
+        with_app(|app| {
+            app.settings.zapret_games_on = on;
+            let _ = app.store.save_settings(&app.settings);
+        });
+        // Новые порты — перезапуск zapret; игры мимо VPN — новый конфиг.
+        if with_app(|app| app.settings.zapret_enabled) {
+            apply(&ui);
+        }
+        if routing_active() && with_app(|app| app.runner.is_some()) {
+            reconnect(&ui);
+        }
+        refresh(&ui);
+    });
+
+    let w = ui.as_weak();
+    ui.on_games_pick_process(move || {
+        let ui = w.unwrap();
+        PICK_GAME.with(|c| c.set(true));
+        ui.invoke_pick_process();
+    });
+
+    let w = ui.as_weak();
+    ui.on_games_open_presets(move || {
+        let ui = w.unwrap();
+        let have = with_app(|app| app.settings.zapret_games.clone());
+        let rows: Vec<EntryItem> = GAME_PRESETS
+            .iter()
+            .map(|p| {
+                let added = have.iter().any(|g| g.strip_prefix("preset:") == Some(p.id));
+                EntryItem {
+                    text: p.title.into(),
+                    kind: if added { "уже в списке".into() } else { p.procs.join(", ").into() },
+                    icon: if added { 6 } else { 0 },
+                    first: false,
+                    last: false,
+                }
+            })
+            .collect();
+        ui.set_game_presets(ModelRc::new(VecModel::from(rows)));
+        ui.set_picking_game(true);
+    });
+
+    let w = ui.as_weak();
+    ui.on_games_preset_chosen(move |i| {
+        let ui = w.unwrap();
+        ui.set_picking_game(false);
+        if let Some(p) = GAME_PRESETS.get(i as usize) {
+            add_game(&ui, format!("preset:{}", p.id));
+        }
+    });
+
+    let w = ui.as_weak();
+    ui.on_games_remove(move |i| {
+        let ui = w.unwrap();
+        with_app(|app| {
+            if (i as usize) < app.settings.zapret_games.len() {
+                app.settings.zapret_games.remove(i as usize);
+            }
+        });
+        games_changed(&ui);
+    });
+
+    let w = ui.as_weak();
     ui.on_zapret_toggle_more(move || {
         MORE_OPEN.with(|c| c.set(!c.get()));
         refresh(&w.unwrap());
@@ -417,6 +571,26 @@ pub(super) fn refresh(ui: &AppWindow) {
             if user_n == 0 { "«Через zapret» в правилах · пусто".to_string() } else { format!("«Через zapret» в правилах · {}", plural_n(user_n)) }.into(),
         );
         ui.set_zapret_rows(ModelRc::new(VecModel::from(rows)));
+        let games = &app.settings.zapret_games;
+        let n = games.len();
+        ui.set_games_on(app.settings.zapret_games_on);
+        ui.set_games_sub(
+            match (app.settings.zapret_games_on, n) {
+                (false, _) => "выключено".to_string(),
+                (true, 0) => "включено · список игр пуст".to_string(),
+                (true, n) => format!("включено · {} мимо VPN", plural_games(n)),
+            }
+            .into(),
+        );
+        let game_rows: Vec<EntryItem> = games
+            .iter()
+            .enumerate()
+            .map(|(i, g)| {
+                let (title, sub) = game_row(g);
+                EntryItem { text: title.into(), kind: sub.into(), icon: 0, first: i == 0, last: i + 1 == n }
+            })
+            .collect();
+        ui.set_game_rows(ModelRc::new(VecModel::from(game_rows)));
 
         // Плитка на главной.
         let (title, sub, bad) = if z.cancel.is_some() {
@@ -555,7 +729,8 @@ fn prepare_args(dir: &Path) -> Result<(String, Vec<String>), String> {
     let ips = with_app(|app| app.zap.ips.clone());
     let ex = zapret::write_exclude(dir, &ips);
     let (host, ipset) = write_user_files(dir);
-    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset) };
+    let games = with_app(|app| app.settings.zapret_games_on);
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset), games };
     let list = zapret::strategies(dir);
     let want = with_app(|app| app.settings.zapret_strategy.clone());
     let s = list.iter().find(|s| s.id == want).or(list.first()).ok_or("в папке zapret нет стратегий")?;
@@ -609,6 +784,16 @@ pub(super) fn routing_list() -> Option<RuleList> {
         );
         if ok && !entries.contains(&e) {
             entries.push(e);
+        }
+    }
+    // Игры — мимо VPN, их подключения на игровых портах обрабатывает zapret.
+    if with_app(|app| app.settings.zapret_games_on) {
+        for g in with_app(|app| app.settings.zapret_games.clone()) {
+            for e in game_entries(&g) {
+                if !entries.contains(&e) {
+                    entries.push(e);
+                }
+            }
         }
     }
     Some(RuleList { name: "zapret".into(), builtin: false, enabled: true, action: Action::Direct, entries })
@@ -729,7 +914,8 @@ fn start_test(ui: &AppWindow) {
     zapret::ensure_user_lists(&dir);
     let ex = zapret::write_exclude(&dir, &with_app(|app| app.zap.ips.clone()));
     let (host, ipset) = write_user_files(&dir);
-    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset) };
+    let games = with_app(|app| app.settings.zapret_games_on);
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&host), ipset: Some(&ipset), games };
     let mut jobs = Vec::new();
     for s in zapret::strategies(&dir) {
         let parsed = std::fs::read_to_string(&s.file)
@@ -850,4 +1036,14 @@ fn start_test(ui: &AppWindow) {
 /// «1 запись», «3 записи», «7 записей».
 fn plural_n(n: usize) -> String {
     format!("{n} {}", plural(n, "запись", "записи", "записей"))
+}
+
+/// «1 игра», «2 игры», «5 игр».
+fn plural_games(n: usize) -> String {
+    let w = match (n % 10, n % 100) {
+        (1, x) if x != 11 => "игра",
+        (2..=4, x) if !(12..=14).contains(&x) => "игры",
+        _ => "игр",
+    };
+    format!("{n} {w}")
 }

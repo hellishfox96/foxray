@@ -9,7 +9,7 @@ fn real_strategies_parse() {
     assert!(list.len() > 5, "мало стратегий: {}", list.len());
     let ex = dir.join("lists").join(zapret::EXCLUDE_FILE);
     let (h, i) = (dir.join("lists").join(zapret::USER_HOSTLIST), dir.join("lists").join(zapret::USER_IPSET));
-    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i) };
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i), games: false };
     for s in &list {
         let text = std::fs::read_to_string(&s.file).unwrap();
         let args = zapret::parse_bat(&text, &dir, extra).unwrap_or_else(|e| panic!("{}: {e}", s.id));
@@ -46,7 +46,8 @@ fn strategies_pass_nfqws_dry_run() {
     let ex = zapret::write_exclude(&dir, &[]);
     let user = zapret::UserLists { hosts: vec!["rutracker.org".into(), "^x.com".into()], ips: vec!["104.16.0.0/13".into()] };
     let (h, i) = zapret::write_user_lists(&dir, &user);
-    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i) };
+    for games in [false, true] {
+    let extra = zapret::Extra { exclude: Some(&ex), hostlist: Some(&h), ipset: Some(&i), games };
     for s in zapret::strategies(&dir) {
         let text = std::fs::read_to_string(&s.file).unwrap();
         let win = zapret::parse_bat(&text, &dir, extra).unwrap();
@@ -66,7 +67,8 @@ fn strategies_pass_nfqws_dry_run() {
             String::from_utf8_lossy(&out.stdout).lines().rev().take(5).collect::<Vec<_>>().join("\n"),
             String::from_utf8_lossy(&out.stderr)
         );
-        println!("{:<22} ok", s.title);
+        println!("{:<22} ok (игры: {games})", s.title);
+    }
     }
 }
 

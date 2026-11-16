@@ -44,6 +44,8 @@ VPN-клиент для Windows и Linux поверх [sing-box](https://github.
 
       sudo apt install nftables pkexec        # Ubuntu 22.04+, Debian 12+ (в старых — policykit-1)
       sudo dnf install nftables polkit        # Fedora
+- «Игры» — игровые порты (Game Filter сборки) для игр из списка: они идут мимо VPN через zapret.
+  Помогает, если без VPN сервера игры не отвечают или выкидывает из матча; если сервер заблокирован по адресу — не поможет.
 - Discord ловится по программе: обычный клиент, PTB/Canary, Vesktop, Equibop, Legcord.
   Discord в браузере — сайты идут через zapret, голос через VPN.
 

@@ -60,6 +60,10 @@ pub struct AppSettings {
     pub hwid: String,
     /// Избранные серверы (блок «Избранное» сверху на вкладке «Серверы»).
     pub favorites: Vec<Favorite>,
+    /// Zapret → Игры: игровые порты (Game Filter) включены.
+    pub zapret_games_on: bool,
+    /// Игры мимо VPN через zapret: «preset:dbd» (готовая) или запись программы («Game.exe», «process:game»).
+    pub zapret_games: Vec<String>,
 }
 
 /// Избранный сервер. Номер в списке не годится — подписка при обновлении заменяет серверы,
@@ -87,7 +91,7 @@ impl Favorite {
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { lan_bypass: true, remote_direct: true, selected: None, connect_on_start: false, subscriptions: Vec::new(), tray_hint_shown: false, close_action: 0, custom_dns: false, dns_address: String::new(), zapret_enabled: false, zapret_strategy: "general".into(), zapret_results: Default::default(), zapret_autostart: true, hwid: String::new(), favorites: Vec::new() }
+        Self { lan_bypass: true, remote_direct: true, selected: None, connect_on_start: false, subscriptions: Vec::new(), tray_hint_shown: false, close_action: 0, custom_dns: false, dns_address: String::new(), zapret_enabled: false, zapret_strategy: "general".into(), zapret_results: Default::default(), zapret_autostart: true, hwid: String::new(), favorites: Vec::new(), zapret_games_on: false, zapret_games: Vec::new() }
     }
 }
 
